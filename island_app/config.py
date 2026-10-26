@@ -1,0 +1,207 @@
+"""Settings (settings.json, hand-editable, live-reloaded) and app data (data.json)."""
+import base64
+import copy
+import ctypes
+import ctypes.wintypes as wt
+import json
+import os
+import sys
+import threading
+import time
+
+APP_NAME = "Island"
+APP_VERSION = "1.0.0"
+
+DATA_DIR = os.environ.get("ISLAND_HOME") or os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), APP_NAME)
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+DATA_PATH = os.path.join(DATA_DIR, "data.json")
+CLIP_DIR = os.path.join(DATA_DIR, "clips")
+SHOTS_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "Island")
+
+DEFAULTS = {
+    "theme": "dark",            # dark | light | system
+    "scale": 100,               # 80..200 %
+    "autohide": False,          # idle pill shrinks to a thin line at the top edge
+    "hide_fullscreen": True,    # hide while a fullscreen app (game, video) is in front
+    "autostart": False,
+    "screen": 0,                # 0 = primary, 1.. = other monitors
+    "top_offset": 6,
+    "expand_on_hover": True,
+    "hover_delay_ms": 140,
+    "collapse_delay_ms": 450,
+    "dnd": False,               # do not disturb: no transient alerts
+    "live": {"music": True, "timer": True, "layout": True, "caps": True,
+             "privacy": True, "downloads": True, "claude": True},
+    "clipboard": {"max_items": 200, "save_images": True},
+    "hotkeys": {
+        "command": "alt+space",
+        "toggle": "ctrl+alt+i",
+        "clipboard": "ctrl+alt+v",
+        "screenshot": "ctrl+alt+s",
+        "picker": "ctrl+alt+c",
+        "qr": "ctrl+alt+q",
+        "ocr": "ctrl+alt+o",
+        "notes": "ctrl+alt+n",
+        "timer": "ctrl+alt+t",
+        "ai": "ctrl+alt+a",
+    },
+    "ai": {"model": "claude-sonnet-5-5", "api_key": "", "translate_to": "ru"},
+    "weather": {"enabled": True, "city": ""},
+    "hooks": {"enabled": True, "port": 47811},
+    "pomodoro": {"work": 25, "short": 5, "long": 15, "cycles": 4},
+}
+
+
+def _merge(base, over):
+    out = copy.deepcopy(base)
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _atomic_write(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    for _ in range(20):  # the file watcher / an editor may hold the target for a moment
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+class Settings:
+    def __init__(self):
+        self.data = copy.deepcopy(DEFAULTS)
+        self.last_text = ""
+        self.load()
+
+    def load(self):
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                text = f.read()
+            self.last_text = text
+            self.data = _merge(DEFAULTS, json.loads(text))
+            return True
+        except FileNotFoundError:
+            self.save()
+            return True
+        except (OSError, ValueError):
+            return False  # keep the previous values while the user is mid-edit
+
+    def save(self):
+        _atomic_write(SETTINGS_PATH, self.data)
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                self.last_text = f.read()
+        except OSError:
+            pass
+
+    def changed_on_disk(self):
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                return f.read() != self.last_text
+        except OSError:
+            return False
+
+    def get(self, path, default=None):
+        node = self.data
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return default
+            node = node[part]
+        return node
+
+    def set(self, path, value, save=True):
+        parts = path.split(".")
+        node = self.data
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+        if save:
+            self.save()
+
+    @property
+    def scale(self):
+        try:
+            return max(0.8, min(2.0, float(self.data.get("scale", 100)) / 100.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+
+class Store:
+    """Notes, reminders, clipboard history, shelf and colour history. Saved with a debounce."""
+
+    def __init__(self):
+        self.data = {"notes": [], "reminders": [], "clips": [], "shelf": [], "colors": []}
+        self._lock = threading.Lock()
+        self._dirty_at = 0.0
+        try:
+            with open(DATA_PATH, encoding="utf-8") as f:
+                self.data.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def touch(self):
+        self._dirty_at = time.time()
+
+    def flush(self, force=False):
+        if not self._dirty_at:
+            return
+        if not force and time.time() - self._dirty_at < 1.0:
+            return
+        with self._lock:
+            self._dirty_at = 0.0
+            _atomic_write(DATA_PATH, self.data)
+
+
+# --- DPAPI: the API key typed into the UI is stored encrypted for the current Windows user ---
+
+class _Blob(ctypes.Structure):
+    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _blob(data):
+    buf = ctypes.create_string_buffer(data, len(data))
+    return _Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf
+
+
+def protect(text):
+    if not text or sys.platform != "win32":
+        return ""
+    src, _keep = _blob(text.encode("utf-8"))
+    out = _Blob()
+    if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(src), "Island", None, None, None, 0,
+                                                  ctypes.byref(out)):
+        return ""
+    data = ctypes.string_at(out.pbData, out.cbData)
+    ctypes.windll.kernel32.LocalFree(out.pbData)
+    return "dpapi:" + base64.b64encode(data).decode()
+
+
+def unprotect(value):
+    if not value:
+        return ""
+    if not value.startswith("dpapi:"):
+        return value  # plain key typed straight into settings.json
+    try:
+        src, _keep = _blob(base64.b64decode(value[6:]))
+        out = _Blob()
+        if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0,
+                                                        ctypes.byref(out)):
+            return ""
+        data = ctypes.string_at(out.pbData, out.cbData)
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+        return data.decode("utf-8")
+    except Exception:
+        return ""
