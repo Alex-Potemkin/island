@@ -142,6 +142,12 @@ class App(QObject):
         self.tray.show()
 
     def eventFilter(self, obj, e):
+        if e.type() == QEvent.KeyPress and hasattr(obj, "window"):
+            try:
+                if obj.window() is self.island:
+                    self.island.note_typing()
+            except RuntimeError:
+                pass
         # clicking a text field in the (non-activating) panel lets it take keyboard focus
         if e.type() == QEvent.MouseButtonPress and hasattr(obj, "window"):
             try:

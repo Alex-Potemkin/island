@@ -141,6 +141,8 @@ class Island(QWidget):
         self._art_cache = (None, None)
         self._fg_tick = 0
         self.toast = None               # notification card currently shown in the pill
+        self._last_key = 0.0            # last key press inside the panel
+        self._mouse_in_panel = False    # the mouse visited the panel since it took keyboard focus
         self._toasts = deque()
         T = self.T
         self.pad = T.s(34)
@@ -676,6 +678,7 @@ class Island(QWidget):
             if fg and not osapi.is_own(fg):
                 self.prev_hwnd = fg
             self.input_mode = True
+            self._mouse_in_panel = False
             osapi.noactivate(self, False)
         self.activateWindow()
         osapi.activate(self)
@@ -720,16 +723,24 @@ class Island(QWidget):
             return
         if self.mode == "expanded":
             zone = shape.adjusted(-T.s(16), -T.s(40), T.s(16), T.s(18))
-            busy = (self._hold or self.dragging or self.input_mode or self.panel.pin.isChecked()
+            inside = zone.contains(pos)
+            if self.input_mode and inside:
+                self._mouse_in_panel = True
+            # While the panel has keyboard focus it stays open if the user is typing, or if it was opened
+            # from the keyboard (Alt+Space) and the mouse never came near. Otherwise leaving closes it.
+            typing = now - self._last_key < 2.5
+            input_hold = self.input_mode and (typing or not self._mouse_in_panel)
+            busy = (self._hold or self.dragging or input_hold or self.panel.pin.isChecked()
                     or self.panel.current.key == "welcome"
                     or QApplication.activePopupWidget() is not None
                     or QApplication.mouseButtons() != Qt.NoButton)
-            if zone.contains(pos) or busy:
+            if inside or busy:
                 self._leave_since = None
             elif self._leave_since is None:
                 self._leave_since = now
-            elif (now - self._leave_since) * 1000 >= self.app.settings.get("collapse_delay_ms", 450):
-                self.collapse()
+            elif (now - self._leave_since) * 1000 >= self.app.settings.get("collapse_delay_ms", 450) + \
+                    (500 if self.input_mode else 0):
+                self.collapse(restore_focus=self.input_mode)
             return
         top = self.mapToGlobal(QPoint(0, 0)).y()
         zone = QRect(shape.left() - T.s(10), top, shape.width() + T.s(20), shape.bottom() - top + T.s(6))
@@ -796,6 +807,9 @@ class Island(QWidget):
         self.hold(True)
         m.exec(pos)
         self.hold(False)
+
+    def note_typing(self):
+        self._last_key = time.monotonic()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:

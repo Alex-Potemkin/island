@@ -141,6 +141,33 @@ def main():
         check("Esc collapses and returns focus", isl.mode != "expanded" and winapi.foreground() == state["target"],
               f"mode={isl.mode} fg={title(winapi.foreground())} prev={isl.prev_hwnd} target={state['target']}")
 
+    def click_at(x, y):
+        r = isl.screen().devicePixelRatio()
+        user32.SetCursorPos(int(x * r), int(y * r))
+        user32.mouse_event(0x0002, 0, 0, 0, 0)  # left down
+        user32.mouse_event(0x0004, 0, 0, 0, 0)  # left up
+
+    def open_clipboard():
+        hover()
+
+    def click_search():
+        check("hover opened the panel again", isl.mode == "expanded", isl.mode)
+        isl.show_page("clipboard")
+
+    def click_search2():
+        field = isl.panel.page("clipboard").search
+        c = field.mapToGlobal(field.rect().center())
+        click_at(c.x(), c.y())
+
+    def leave_after_click():
+        check("clicking a text field lets the panel take keyboard input", isl.input_mode, isl.input_mode)
+        away()
+
+    def after_leave():
+        check("moving the mouse away still collapses after a click in a field", isl.mode != "expanded", isl.mode)
+        check("…and gives focus back to the previous window", winapi.foreground() == state["target"],
+              title(winapi.foreground()))
+
     def settings_fit():
         isl.expand("settings")
 
@@ -163,6 +190,12 @@ def main():
     step(700, after_alt_space)
     step(500, esc)
     step(800, after_esc)
+    step(300, focus_target)
+    step(300, open_clipboard)
+    step(1000, click_search)
+    step(700, click_search2)
+    step(600, leave_after_click)
+    step(2600, after_leave)
     step(200, settings_fit)
     step(900, after_settings)
 
