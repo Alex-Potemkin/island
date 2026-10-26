@@ -97,6 +97,12 @@ def activate(widget):
     widget.show()
     widget.raise_()
     widget.activateWindow()
+    # Window managers treat an app's own activation request as focus stealing and may ignore it;
+    # a request in the name of a pager/taskbar (what xdotool sends) is honoured.
+    if have("xdotool"):
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(30, lambda: subprocess.run(["xdotool", "windowactivate", str(int(widget.winId()))],
+                                                     capture_output=True, timeout=2))
 
 
 def ensure_topmost(widget):
@@ -225,6 +231,13 @@ def autostart_command():
         return shlex.quote(sys.executable)
     main = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "main.py")
     return f"{shlex.quote(sys.executable)} {shlex.quote(main)}"
+
+
+def cli_command():
+    """How to call Island from a shell / desktop shortcut."""
+    if not getattr(sys, "frozen", False) and have("island"):
+        return "island"     # launcher created by linux/install.sh
+    return autostart_command()
 
 
 def set_autostart(on):

@@ -120,7 +120,8 @@ class Island(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool |
                          Qt.NoDropShadowWindowHint | Qt.WindowDoesNotAcceptFocus)
         self.app = app
-        self.T = app.theme
+        self.T = app.theme          # panel
+        self.P = app.pill_theme     # the pill: UI scale × pill size
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAcceptDrops(True)
@@ -143,8 +144,9 @@ class Island(QWidget):
         self.max_w = T.s(760)
         self.max_h = T.s(600)
         self.resize(self.max_w + 2 * self.pad, self.max_h + self.pad)
-        self.springs = {"w": Spring(T.s(124)), "h": Spring(T.s(30)), "y": Spring(self._top()),
-                        "r": Spring(T.s(15)), "o": Spring(0, 260, 1.0)}
+        k = T.stiffness or 420.0
+        self.springs = {"w": Spring(T.s(124), k), "h": Spring(T.s(30), k), "y": Spring(self._top(), k),
+                        "r": Spring(T.s(15), k), "o": Spring(0, 260, 1.0)}
         self.panel = Panel(self)
         self.panel.hide()
         self._anim = QTimer(self, interval=15, timeout=self._step)
@@ -169,30 +171,44 @@ class Island(QWidget):
 
     def place(self):
         g = self.screen_obj().geometry()
-        self.move(g.x() + (g.width() - self.width()) // 2, g.y())
+        margin = self.T.s(12)
+        x = {"left": g.x() + margin - self.pad,
+             "right": g.x() + g.width() - self.width() + self.pad - margin}.get(
+            self.T.position, g.x() + (g.width() - self.width()) // 2)
+        self.move(x, g.y())
+
+    def _x(self, w):
+        """Left edge of a shape of width w inside the window, for the chosen position."""
+        if self.T.position == "left":
+            return float(self.pad)
+        if self.T.position == "right":
+            return self.width() - self.pad - w
+        return (self.width() - w) / 2
 
     def shape_rect(self):
         s = self.springs
         w, h = max(s["w"].v, 4), max(s["h"].v, 2)
-        return QRectF((self.width() - w) / 2, s["y"].v, w, h)
+        return QRectF(self._x(w), s["y"].v, w, h)
 
     def target_rect(self):
         s = self.springs
-        return QRectF((self.width() - s["w"].target) / 2, s["y"].target, s["w"].target, s["h"].target)
+        return QRectF(self._x(s["w"].target), s["y"].target, s["w"].target, s["h"].target)
 
     def retarget(self, snap=False):
-        T = self.T
+        T, P = self.T, self.P
         s = self.springs
+        snap = snap or not T.stiffness          # "Без анимации"
         live = self.app.current_live()
         if self.mode == "expanded":
-            w, h, r, y, o = self.max_w, min(self.panel.content_height(), self.max_h), T.s(30), self._top(), 1.0
+            w, h = self.max_w, min(self.panel.content_height(), self.max_h)
+            r, y, o = max(T.s(8), T.r(30)), self._top(), 1.0
         elif self.mode == "live" and live:
-            w, h = self.live_width(live), T.s(36)
+            w, h = self.live_width(live), P.s(36)
             r, y, o = h / 2, self._top(), 0.0
         elif self.mode == "hidden":
-            w, h, r, y, o = T.s(120), T.s(5), T.s(2.5), 0.0, 0.0
+            w, h, r, y, o = P.s(120), T.s(5), T.s(2.5), 0.0, 0.0
         else:
-            w, h, r, y, o = self.idle_width(), T.s(30), T.s(15), self._top(), 0.0
+            w, h, r, y, o = self.idle_width(), P.s(30), P.s(15), self._top(), 0.0
         s["w"].target, s["h"].target, s["r"].target, s["y"].target, s["o"].target = w, h, r, y, o
         if self.mode == "expanded":
             tr = self.target_rect()
@@ -266,7 +282,7 @@ class Island(QWidget):
         rad = min(self.springs["r"].v, r.height() / 2)
         big = r.height() > T.s(60)
         # soft shadow
-        if (big or not T.dark) and osapi.IS_WINDOWS:
+        if (big or not T.dark) and T.shadow and osapi.IS_WINDOWS:
             layers = 10 if big else 4
             base = T.c["shadow"] if big else T.c["shadow"] // 3
             for i in range(layers, 0, -1):
@@ -275,7 +291,7 @@ class Island(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(c)
                 p.drawRoundedRect(r.adjusted(-grow, -grow * 0.4, grow, grow * 1.1), rad + grow, rad + grow)
-        p.setBrush(T.col("bg"))
+        p.setBrush(T.bg())
         p.setPen(QPen(T.col("border"), 1) if not T.dark else Qt.NoPen)
         p.drawRoundedRect(r, rad, rad)
         if self.mode in ("live", "idle") and r.height() > T.s(20):
@@ -295,7 +311,7 @@ class Island(QWidget):
         return max(0.0, min(1.0, 1 - dw * 6))
 
     def live_width(self, live):
-        T = self.T
+        T = self.P
         h = T.s(36)
         fm = QFontMetrics(T.font(12.5, 600))
         dots = self._dots_width()
@@ -324,16 +340,16 @@ class Island(QWidget):
     def idle_width(self):
         text = self.idle_text()
         if not text:
-            return self.T.s(124)
-        return max(self.T.s(124), QFontMetrics(self.T.tabular(13)).horizontalAdvance(text) + self.T.s(44))
+            return self.P.s(124)
+        return max(self.P.s(124), QFontMetrics(self.P.tabular(13)).horizontalAdvance(text) + self.P.s(44))
 
     def _dots_width(self):
         st = self.app.privacy
         n = (1 if st[0] else 0) + (1 if st[1] else 0)
-        return self.T.s(8 + 12 * n) if n else 0
+        return self.P.s(8 + 12 * n) if n else 0
 
     def paint_live(self, p, r):
-        T = self.T
+        T = self.P
         live = self.app.current_live()
         alpha = self._content_alpha(r)
         mic, cam = self.app.privacy
@@ -365,12 +381,12 @@ class Island(QWidget):
         p.restore()
 
     def _icon(self, p, rect, glyph, color="fg", px=15):
-        p.setFont(self.T.icon_font(px))
-        p.setPen(self.T.col(color))
+        p.setFont(self.P.icon_font(px))
+        p.setPen(self.P.col(color))
         p.drawText(rect, Qt.AlignCenter, glyph)
 
     def _live_music(self, p, r, live, right):
-        T = self.T
+        T = self.P
         size = r.height() - T.s(10)
         art = QRectF(r.left() + T.s(5), r.top() + T.s(5), size, size)
         pm = self._art_pixmap(live.get("art"))
@@ -420,7 +436,7 @@ class Island(QWidget):
         return self._art_cache[1]
 
     def _live_timer(self, p, r, live, right):
-        T = self.T
+        T = self.P
         ring = QRectF(r.left() + T.s(8), r.top() + T.s(7), r.height() - T.s(14), r.height() - T.s(14))
         p.setPen(QPen(T.col("active"), T.s(2.5)))
         p.setBrush(Qt.NoBrush)
@@ -441,7 +457,7 @@ class Island(QWidget):
                    Qt.AlignVCenter | Qt.AlignRight, live.get("value", ""))
 
     def _live_alert(self, p, r, live, right):
-        T = self.T
+        T = self.P
         x = r.left() + T.s(14)
         icon = QRectF(x, r.top(), T.s(22), r.height())
         if live.get("swatch"):
@@ -745,7 +761,8 @@ class Island(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        osapi.noactivate(self, True)
+        if not self.input_mode:  # on X11 letting the panel take focus re-shows the window
+            osapi.noactivate(self, True)
         self.ensure_topmost()
 
 

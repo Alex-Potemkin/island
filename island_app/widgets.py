@@ -257,7 +257,7 @@ class Tile(QAbstractButton):
         on = self.isChecked()
         p.setPen(Qt.NoPen)
         p.setBrush(T.col("inv_bg") if on else (T.col("hover") if self._hover else T.col("surface")))
-        p.drawRoundedRect(r, T.s(16), T.s(16))
+        p.drawRoundedRect(r, T.r(16), T.r(16))
         fg = T.col("inv_fg") if on else T.col("fg")
         sub = T.col("inv_fg", 150) if on else T.col("fg2")
         pad = T.s(14)
@@ -293,7 +293,7 @@ class Sparkline(QWidget):
         r = QRectF(self.rect())
         p.setPen(Qt.NoPen)
         p.setBrush(T.col("surface"))
-        p.drawRoundedRect(r, T.s(14), T.s(14))
+        p.drawRoundedRect(r, T.r(14), T.r(14))
         pad = T.s(12)
         p.setFont(T.font(11))
         p.setPen(T.col("fg2"))
@@ -344,7 +344,7 @@ class Art(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         r = QRectF(self.rect())
         path = QPainterPath()
-        path.addRoundedRect(r, T.s(self.radius), T.s(self.radius))
+        path.addRoundedRect(r, T.r(self.radius), T.r(self.radius))
         p.setClipPath(path)
         if self.pix:
             pm = self.pix.scaled(self.size() * self.devicePixelRatioF(), Qt.KeepAspectRatioByExpanding,
@@ -372,7 +372,7 @@ class Swatch(QAbstractButton):
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         p.setPen(QPen(T.col("line"), 1))
         p.setBrush(self.color)
-        p.drawRoundedRect(r, T.s(8), T.s(8))
+        p.drawRoundedRect(r, T.r(8), T.r(8))
 
 
 class ClickLabel(QLabel):

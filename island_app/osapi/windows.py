@@ -253,6 +253,10 @@ def autostart_command():
     return f'"{pyw if os.path.exists(pyw) else sys.executable}" "{main}"'
 
 
+def cli_command():
+    return autostart_command().replace("pythonw.exe", "python.exe")
+
+
 def set_autostart(on):
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN, 0, winreg.KEY_SET_VALUE) as key:
         if on:

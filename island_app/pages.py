@@ -1010,7 +1010,8 @@ class ControlPage(Page):
                 tile.setSub("Вкл" if st[kind] else "Выкл")
             else:
                 tile.setChecked(False)
-                tile.setSub("Нет адаптера" if st else "…")
+                tile.setEnabled(not self.app.radios.ready)
+                tile.setSub("недоступно" if self.app.radios.ready else "…")
 
     def _dark(self, on):
         try:

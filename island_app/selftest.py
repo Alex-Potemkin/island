@@ -71,7 +71,7 @@ def run(app, argv):
         step(1300 if key != "system" else 3200, None, f"1{i:01d}_{key}" if i < 10 else f"2{i - 10}_{key}")
     step(200, lambda: isl().collapse(), None)
     # settings sections and first run
-    for i, name in ((1, "21_settings_builder"), (2, "22_settings_more")):
+    for i, name in ((1, "23_settings_look"), (2, "21_settings_builder"), (3, "22_settings_more")):
         step(300, lambda i=i: (isl().expand("settings"), isl().panel.page("settings")._section(i)), None)
         step(1200, None, name)
     step(200, lambda: isl().collapse(), None)
@@ -98,6 +98,26 @@ def run(app, argv):
     step(1300, lambda: isl().expand("home"), None)
     step(1300, None, "43_scale150_home")
     step(200, lambda: app.set_setting("scale", 100, rebuild=True), None)
+    # appearance: themes, accent, small pill, position
+    looks = [("50_graphite_blue", "graphite", dict(accent="blue")),
+             ("51_midnight_violet", "midnight", dict(accent="violet", corners="round")),
+             ("52_sand_orange", "sand", dict(accent="orange", corners="sharp")),
+             ("53_fog_green_scale70", "fog", dict(accent="green"))]
+    for name, th, look in looks:
+        def apply(th=th, look=look, name=name):
+            app.settings.set("theme", th, save=False)
+            app.settings.set("scale", 70 if "scale70" in name else 100, save=False)
+            app.settings.set("appearance", dict(look))
+            app.rebuild()
+        step(300, apply, None)
+        step(1000, lambda: isl().expand("control"), None)
+        step(1300, None, name)
+    step(300, lambda: (app.settings.set("theme", "dark", save=False), app.settings.set("scale", 100, save=False),
+                       app.settings.set("appearance", dict(pill="small", position="left", accent="pink")),
+                       app.rebuild()), None)
+    step(900, lambda: (isl().panel.pin.setChecked(False), isl().collapse()), None)
+    step(1200, None, "54_small_pill_left")
+    step(300, lambda: (app.settings.set("appearance", {}), app.rebuild()), None)
     step(900, lambda: (isl().panel.pin.setChecked(False), isl().collapse(), app.media.state.update(active=False, playing=False),
                        app.media.changed.emit(app.media.state), app.set_layout(idle="clock")), None)
     step(900, lambda: isl().collapse(), None)

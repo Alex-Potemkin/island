@@ -89,6 +89,7 @@ class App(QObject):
 
     def build_ui(self):
         self.theme = Theme(self.settings)
+        self.pill_theme = Theme(self.settings, pill=True)
         W.set_theme(self.theme)
         self.qapp.setStyleSheet(self.theme.stylesheet())
         self.island = Island(self)
@@ -417,6 +418,14 @@ class App(QObject):
 
     def toggle_theme(self):
         self.set_setting("theme", "light" if self.theme.dark else "dark", rebuild=True)
+
+    def set_appearance(self, **changes):
+        """Appearance options: save now, rebuild once the user pauses (sliders fire often)."""
+        from .theme import appearance
+        a = appearance(self.settings)
+        a.update(changes)
+        self.settings.set("appearance", a)
+        self._rebuild_timer.start()
 
     def toggle_visible(self):
         self.a_hide.setChecked(self.island.isVisible())

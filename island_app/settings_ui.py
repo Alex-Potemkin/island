@@ -2,11 +2,12 @@
 import json
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractButton, QComboBox, QGridLayout, QHBoxLayout, QLineEdit, QScrollArea,
                                QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import config, layout, osapi
+from . import theme as TH
 from . import widgets as W
 from .pages import Page
 from .widgets import IconButton, button, hbox, label, vbox
@@ -47,7 +48,7 @@ class PresetCard(QAbstractButton):
         on = self.isChecked()
         p.setBrush(T.col("inv_bg") if on else (T.col("hover") if self._hover else T.col("surface")))
         p.setPen(Qt.NoPen if on else QPen(T.col("line"), 1))
-        p.drawRoundedRect(r, T.s(16), T.s(16))
+        p.drawRoundedRect(r, T.r(16), T.r(16))
         fg, sub = (T.col("inv_fg"), T.col("inv_fg", 160)) if on else (T.col("fg"), T.col("fg2"))
         pad = T.s(14)
         p.setPen(fg)
@@ -60,6 +61,99 @@ class PresetCard(QAbstractButton):
         p.setFont(T.font(11.5))
         p.drawText(QRectF(pad, pad + T.s(22), r.width() - 2 * pad, r.height() - pad * 2 - T.s(20)),
                    Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, self.text)
+
+
+class ThemeCard(QAbstractButton):
+    """Theme preview: the palette's background with a little pill and its name."""
+
+    def __init__(self, key, title, palette):
+        super().__init__()
+        self.key, self.title, self.pal = key, title, palette
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(W.T.s(104), W.T.s(74))
+        self.setToolTip(title)
+
+    def paintEvent(self, _e):
+        T = W.T
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        pal = self.pal
+        if pal is None:  # "as in the system": half dark, half light
+            left = QRectF(r.left(), r.top(), r.width() / 2, r.height())
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#000000"))
+            p.drawRoundedRect(r, T.r(12), T.r(12))
+            p.setClipRect(QRectF(left.right(), r.top(), r.width() / 2, r.height()))
+            p.setBrush(QColor("#ffffff"))
+            p.drawRoundedRect(r, T.r(12), T.r(12))
+            p.setClipping(False)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(T.col("line"), 1))
+            p.drawRoundedRect(r, T.r(12), T.r(12))
+            fg = QColor("#808080")
+        else:
+            p.setPen(QPen(QColor(pal["line"]), 1))
+            p.setBrush(QColor(pal["bg"]))
+            p.drawRoundedRect(r, T.r(12), T.r(12))
+            pill = QRectF(r.center().x() - T.s(24), r.top() + T.s(12), T.s(48), T.s(14))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(pal["fg"]))
+            p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+            p.setBrush(QColor(pal["bg"]))
+            p.drawEllipse(QRectF(pill.right() - T.s(11), pill.top() + T.s(4), T.s(6), T.s(6)))
+            fg = QColor(pal["fg"])
+        p.setPen(fg)
+        p.setFont(T.font(11.5, 600))
+        p.drawText(QRectF(r.left(), r.bottom() - T.s(28), r.width(), T.s(22)), Qt.AlignCenter, self.title)
+        if self.isChecked():
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(T.col("inv_bg"), T.s(2.5)))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), T.r(13), T.r(13))
+
+
+class AccentDot(QAbstractButton):
+    def __init__(self, title, color, fallback):
+        super().__init__()
+        self.color = QColor(color or fallback)
+        self.mono = color is None
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(title)
+        self.setFixedSize(W.T.s(30), W.T.s(30))
+
+    def paintEvent(self, _e):
+        T = W.T
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(T.s(5), T.s(5), -T.s(5), -T.s(5))
+        p.setPen(QPen(T.col("line"), 1))
+        if self.mono:  # half fg, half bg
+            p.setBrush(T.col("bg"))
+            p.drawEllipse(r)
+            p.setBrush(T.col("fg"))
+            p.drawPie(r, 90 * 16, 180 * 16)
+        else:
+            p.setBrush(self.color)
+            p.drawEllipse(r)
+        if self.isChecked():
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(T.col("fg"), T.s(2)))
+            p.drawEllipse(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5))
+
+
+def slider(lo, hi, value, step_label, on_release, width=200):
+    """Horizontal slider with a value label; on_release(value) when the user lets go."""
+    sl = QSlider(Qt.Horizontal)
+    sl.setRange(lo, hi)
+    sl.setValue(value)
+    sl.setFixedWidth(W.T.s(width))
+    val = label(step_label(value), "muted")
+    val.setFixedWidth(W.T.s(48))
+    sl.valueChanged.connect(lambda v: val.setText(step_label(v)))
+    sl.sliderReleased.connect(lambda: on_release(sl.value()))
+    return hbox(sl, val, spacing=8)
 
 
 class ReorderList(QWidget):
@@ -194,7 +288,7 @@ class _Form(QWidget):
 
 class SettingsPage(Page):
     key, glyph, title, height = "settings", "", "Настройки", 480
-    SECTIONS = [("main", "Основное"), ("builder", "Конструктор"), ("more", "Дополнительно")]
+    SECTIONS = [("main", "Основное"), ("look", "Вид"), ("builder", "Конструктор"), ("more", "Дополнительно")]
 
     def build(self):
         T = self.T
@@ -246,18 +340,10 @@ class SettingsPage(Page):
         gw.setLayout(grid)
         f.add(gw)
 
-        f.title("Вид")
-        f.row("Тема", "", chip_group([("dark", "Тёмная"), ("light", "Светлая"), ("system", "Как в системе")],
-                                     s.get("theme"), lambda k: self.app.set_setting("theme", k, rebuild=True)))
-        sc = QSlider(Qt.Horizontal)
-        sc.setRange(8, 20)
-        sc.setValue(int(s.get("scale", 100)) // 10)
-        sc.setFixedWidth(W.T.s(200))
-        val = label(f"{s.get('scale', 100)}%", "muted")
-        val.setFixedWidth(W.T.s(44))
-        sc.valueChanged.connect(lambda v: val.setText(f"{v * 10}%"))
-        sc.sliderReleased.connect(lambda: self.app.set_setting("scale", sc.value() * 10, rebuild=True))
-        f.row("Размер", "80–200 %", hbox(sc, val, spacing=8))
+        f.title("Размер")
+        f.row("Весь интерфейс", "60–200 %. Больше настроек вида — в разделе «Вид».",
+              slider(6, 20, int(s.get("scale", 100)) // 10, lambda v: f"{v * 10}%",
+                     lambda v: self.app.set_setting("scale", v * 10, rebuild=True)))
 
         f.title("Поведение")
         f.row("Открывать панель", "", chip_group(
@@ -268,6 +354,85 @@ class SettingsPage(Page):
         at.toggled.connect(self.app.set_autostart)
         f.row(osapi.AUTOSTART_LABEL, "", at)
         return f
+
+    # ------------------------------------------------------------ Вид
+
+    def _look(self):
+        s = self.app.settings
+        a = TH.appearance(s)
+        f = _Form()
+        f.title("Тема")
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(W.T.s(8))
+        cards = []
+        options = [(k, title, pal) for k, (title, pal) in TH.THEMES.items()] + [("system", "Как в системе", None)]
+        for i, (key, title, pal) in enumerate(options):
+            tc = ThemeCard(key, title, pal)
+            tc.setChecked(s.get("theme", "dark") == key)
+            tc.clicked.connect(lambda _=False, k=key: self.app.set_setting("theme", k, rebuild=True))
+            cards.append(tc)
+            grid.addWidget(tc, i // 4, i % 4)
+        grid.setColumnStretch(4, 1)
+        gw = QWidget()
+        gw.setLayout(grid)
+        f.add(gw)
+
+        dots = QHBoxLayout()
+        dots.setContentsMargins(0, 0, 0, 0)
+        dots.setSpacing(W.T.s(2))
+        for key, (title, color) in TH.ACCENTS.items():
+            d = AccentDot(title, color, self.T.c["fg"])
+            d.setChecked(a["accent"] == key)
+            d.clicked.connect(lambda _=False, k=key: self.app.set_appearance(accent=k))
+            dots.addWidget(d)
+        dw = QWidget()
+        dw.setLayout(dots)
+        f.row("Акцент", "Цвет выбранной вкладки, переключателей и кнопок", dw)
+
+        f.title("Размеры")
+        f.row("Весь интерфейс", "60–200 %", slider(
+            6, 20, int(s.get("scale", 100)) // 10, lambda v: f"{v * 10}%",
+            lambda v: self.app.set_setting("scale", v * 10, rebuild=True)))
+        f.row("Пилюля", "Отдельно от панели", chip_group(
+            [(k, t) for k, (t, _f) in TH.PILL.items()], a["pill"], lambda k: self.app.set_appearance(pill=k)))
+
+        f.title("Расположение")
+        f.row("Где пилюля", "", chip_group(list(TH.POSITION.items()), a["position"],
+                                           lambda k: self.app.set_appearance(position=k)))
+        f.row("Отступ сверху", "", slider(0, 40, int(s.get("top_offset", 6)), lambda v: f"{v} px",
+                                          lambda v: self.app.set_setting("top_offset", v, rebuild=True)))
+
+        f.title("Форма и эффекты")
+        f.row("Углы панели", "", chip_group([(k, t) for k, (t, _f) in TH.CORNERS.items()], a["corners"],
+                                            lambda k: self.app.set_appearance(corners=k)))
+        f.row("Непрозрачность", "Меньше — сквозь панель виден рабочий стол", slider(
+            60, 100, a["opacity"], lambda v: f"{v}%", lambda v: self.app.set_appearance(opacity=v)))
+        sh = W.Toggle(a["shadow"])
+        sh.toggled.connect(lambda on: self.app.set_appearance(shadow=on))
+        f.row("Тень под панелью", "", sh)
+        f.row("Анимация", "", chip_group([(k, t) for k, (t, _f) in TH.ANIMATION.items()], a["animation"],
+                                         lambda k: self.app.set_appearance(animation=k)))
+
+        f.title("Шрифт")
+        from PySide6.QtGui import QFontDatabase
+        fams = set(QFontDatabase.families())
+        fonts = QComboBox()
+        names = [n for n in TH.FONTS if n == "auto" or n in fams]
+        for n in names:
+            fonts.addItem("Системный" if n == "auto" else n, n)
+        fonts.setCurrentIndex(max(0, names.index(a["font"]) if a["font"] in names else 0))
+        fonts.currentIndexChanged.connect(lambda i: self.app.set_appearance(font=fonts.itemData(i)))
+        f.row("Шрифт интерфейса", "", fonts)
+        f.add(hbox("stretch", button("Сбросить вид", "ghost", self._reset_look)))
+        return f
+
+    def _reset_look(self):
+        self.app.settings.set("theme", "dark", save=False)
+        self.app.settings.set("scale", 100, save=False)
+        self.app.settings.set("top_offset", 6, save=False)
+        self.app.settings.set("appearance", dict(TH.APPEARANCE))
+        QTimer.singleShot(30, self.app.rebuild)
 
     def _toggle(self, path, rebuild=False):
         t = W.Toggle(bool(self.app.settings.get(path)))
@@ -349,7 +514,7 @@ class SettingsPage(Page):
         else:
             f.add(label("В Linux глобальные сочетания назначаются в настройках системы "
                         "(Клавиатура → Свои сочетания). Команды:", "faint", wrap=True))
-            cmd = osapi.autostart_command()
+            cmd = osapi.cli_command()
             for k, name in ACTIONS.items():
                 f.row(name, "", label(f"{cmd} --action {k}", "muted", selectable=True))
 
@@ -412,7 +577,7 @@ class WelcomePage(Page):
         rw.setLayout(row)
         lay.addWidget(rw)
         lay.addWidget(label("2. Тема", "h2"))
-        lay.addWidget(chip_group([("dark", "Тёмная"), ("light", "Светлая"), ("system", "Как в системе")],
+        lay.addWidget(chip_group([(k, t) for k, (t, _p) in TH.THEMES.items()] + [("system", "Как в системе")],
                                  self.choice["theme"], lambda k: self.choice.__setitem__("theme", k)))
         lay.addWidget(label("3. Как открывать панель", "h2"))
         lay.addWidget(chip_group([("hover", "Наведением на пилюлю"), ("click", "Кликом")],

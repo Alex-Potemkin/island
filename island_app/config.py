@@ -10,6 +10,7 @@ import threading
 import time
 
 from . import layout, osapi
+from .theme import APPEARANCE
 
 APP_NAME = "Island"
 APP_VERSION = "1.0.0"
@@ -23,7 +24,8 @@ SHOTS_DIR = os.path.join(osapi.user_dir("pictures"), "Island")
 DEFAULTS = {
     "onboarded": False,         # the welcome screen was completed
     "layout": dict(layout.DEFAULT),   # panel tabs, home cards, quick buttons, resting pill (see layout.py)
-    "theme": "dark",            # dark | light | system
+    "theme": "dark",            # dark | graphite | midnight | light | fog | sand | system
+    "appearance": dict(APPEARANCE),   # accent, corners, opacity, shadow, animation, pill, position, font
     "scale": 100,               # 80..200 %
     "autohide": False,          # idle pill shrinks to a thin line at the top edge
     "hide_fullscreen": True,    # hide while a fullscreen app (game, video) is in front
@@ -137,7 +139,7 @@ class Settings:
     @property
     def scale(self):
         try:
-            return max(0.8, min(2.0, float(self.data.get("scale", 100)) / 100.0))
+            return max(0.6, min(2.0, float(self.data.get("scale", 100)) / 100.0))
         except (TypeError, ValueError):
             return 1.0
 

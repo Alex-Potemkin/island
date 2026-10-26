@@ -227,6 +227,7 @@ class _WinRadios(QObject):
     def __init__(self):
         super().__init__()
         self.state = {}
+        self.ready = False      # True after the first read; missing kinds then mean "no such radio"
         self._access = False
         self.refresh()
 
@@ -244,6 +245,7 @@ class _WinRadios(QObject):
 
     def _set(self, st):
         self.state = st
+        self.ready = True
         self.changed.emit(st)
 
     def set(self, kind, on):
@@ -263,6 +265,7 @@ class _LinuxRadios(QObject):
     def __init__(self):
         super().__init__()
         self.state = {}
+        self.ready = False
         self.refresh()
 
     @staticmethod
@@ -281,6 +284,7 @@ class _LinuxRadios(QObject):
 
     def _set(self, st):
         self.state = st
+        self.ready = True
         self.changed.emit(st)
 
     def set(self, kind, on):

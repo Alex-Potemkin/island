@@ -84,6 +84,30 @@ def main():
         check("reset keeps onboarding and AI settings", s.get("onboarded") and s.get("ai.translate_to") == "de"
               and s.get("theme") == "dark")
 
+    def look():
+        app.settings.set("theme", "graphite", save=False)
+        app.settings.set("scale", 60, save=False)
+        app.settings.set("appearance", {"accent": "blue", "pill": "small", "position": "left", "animation": "off",
+                                        "opacity": 70, "corners": "nonsense", "font": "No Such Font"})
+        app.rebuild()
+
+    def after_look():
+        t, isl = app.theme, app.island
+        check("theme and accent applied", t.key == "graphite" and t.c["inv_bg"] == "#0a84ff")
+        check("UI can shrink to 60 %", abs(t.k - 0.6) < 1e-6, t.k)
+        check("small pill is smaller than the panel scale", app.pill_theme.k < t.k)
+        check("pill sits on the left", abs(isl.shape_rect().x() - isl.pad) < 1, isl.shape_rect())
+        check("no animation: shape is already in place", abs(isl.springs["w"].v - isl.springs["w"].target) < 0.5)
+        check("opacity reaches the fill", t.bg().alpha() == int(255 * 0.7), t.bg().alpha())
+        check("junk values fall back to defaults", t.a["corners"] == "normal" and t.a["font"] == "No Such Font"
+              and t.ui_family != "No Such Font")
+        app.settings.set("theme", "dark", save=False)
+        app.settings.set("scale", 100, save=False)
+        app.settings.set("appearance", {})
+        app.rebuild()
+
+    step(500, look)
+    step(800, after_look)
     step(500, welcome)
     step(1200, after_welcome)
     step(100, edit_tabs)
