@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import bridge, capture, config, features, services, winapi
+from . import bridge, capture, config, features, layout, osapi, services
 from . import widgets as W
 from .island import Island, is_input
 from .theme import Theme
@@ -51,6 +51,7 @@ class App(QObject):
         self.activities = {}
         self.privacy = ([], [])
         self.overlay = None
+        self.ui_state = {}          # survives UI rebuilds (settings section, scroll position)
         # services
         self.media = services.Media()
         self.radios = services.Radios()
@@ -75,9 +76,12 @@ class App(QObject):
         self.watcher.fileChanged.connect(self._settings_file_changed)
         qapp.installEventFilter(self)
         qapp.aboutToQuit.connect(self._shutdown)
-        if bool(self.settings.get("autostart")) != winapi.autostart_enabled():
+        self._rebuild_timer = QTimer(self, singleShot=True, interval=450, timeout=self.rebuild)
+        if not self.settings.get("onboarded") and not self.demo:
+            QTimer.singleShot(700, self._welcome)
+        if bool(self.settings.get("autostart")) != osapi.autostart_enabled():
             try:
-                winapi.set_autostart(bool(self.settings.get("autostart")))
+                osapi.set_autostart(bool(self.settings.get("autostart")))
             except OSError:
                 pass
 
@@ -100,8 +104,7 @@ class App(QObject):
         expanded = self.island.mode == "expanded"
         self.island.hide()
         self.island.register_hotkeys({})
-        for old in self.island.panel.pages.values():
-            old.teardown()
+        self.island.panel.teardown()
         self.island.deleteLater()
         self.build_ui()
         self.tray.setIcon(make_icon(64))
@@ -121,11 +124,11 @@ class App(QObject):
         self.a_hide.toggled.connect(lambda on: self.island.setVisible(not on))
         m.addAction(self.a_hide)
         self.a_auto = QAction("Запускать с Windows", m, checkable=True)
-        self.a_auto.setChecked(winapi.autostart_enabled())
+        self.a_auto.setChecked(osapi.autostart_enabled())
         self.a_auto.toggled.connect(self.set_autostart)
         m.addAction(self.a_auto)
         m.addAction("Настройки", lambda: self.island.expand("settings"))
-        m.addAction("settings.json", lambda: os.startfile(config.SETTINGS_PATH))
+        m.addAction("settings.json", lambda: osapi.open_path(config.SETTINGS_PATH))
         m.addSeparator()
         m.addAction("Выход", self.quit)
         self.tray_menu = m
@@ -244,7 +247,7 @@ class App(QObject):
     def _download_done(self, path):
         if self.settings.get("live.downloads", True):
             self.alert("", "Загружено", os.path.basename(path), ttl=5,
-                       action=lambda: os.startfile(path) if os.path.exists(path) else None)
+                       action=lambda: osapi.open_path(path) if os.path.exists(path) else None)
 
     def _claude(self, data):
         if not self.settings.get("live.claude", True):
@@ -263,7 +266,7 @@ class App(QObject):
             self._set_activity("claude_wait", {"kind": "claude", "glyph": "", "title": proj, "sub": msg,
                                                "busy": False, "state_glyph": ""})
             if not self.settings.get("dnd"):
-                winapi.beep()
+                osapi.beep()
         elif ev == "Stop":
             self.activities.pop("claude_wait", None)
             self._set_activity("claude", {"kind": "claude", "glyph": "", "title": proj, "sub": "готово",
@@ -274,13 +277,13 @@ class App(QObject):
             self._set_activity("claude", None)
 
     def _timer_finished(self, label):
-        winapi.beep()
+        osapi.beep()
         self.alert("", label, "Таймер", ttl=8, important=True, action=lambda: self.island.expand("timer"))
         if self.timer.mode != "pomodoro":
             self.tray.showMessage("Island", label, make_icon(64), 5000)
 
     def _reminder_fired(self, r):
-        winapi.beep()
+        osapi.beep()
         self.alert("", r["text"], "Напоминание", ttl=15, important=True,
                    action=lambda: self.island.expand("reminders"))
         self.tray.showMessage("Напоминание", r["text"], make_icon(64), 10000)
@@ -293,10 +296,41 @@ class App(QObject):
                    "screenshot": self.screenshot, "picker": self.color_picker, "qr": self.scan_qr, "ocr": self.ocr,
                    "notes": lambda: self.island.expand("notes", focus=True),
                    "timer": lambda: self.island.expand("timer"),
-                   "ai": lambda: self.island.expand("ai", focus=True)}
+                   "ai": lambda: self.island.expand("ai", focus=True),
+                   "show": lambda: self.island.expand(), "settings": lambda: self.island.expand("settings"),
+                   "quit": self.quit}
         fn = actions.get(name)
         if fn:
             fn()
+
+    def quick_action(self, key):
+        {"screenshot": self.screenshot, "fullshot": lambda: self.screenshot(full=True),
+         "picker": self.color_picker, "qr": self.scan_qr, "ocr": self.ocr,
+         "timer5": lambda: self.start_timer(300, "Таймер"), "pomodoro": self.timer.start_pomodoro,
+         "note": lambda: self.open_page("notes", new_note=True), "command": self.open_command,
+         "lock": self.lock}[key]()
+
+    def _welcome(self):
+        if not self.settings.get("onboarded"):
+            self.island.expand("welcome")
+
+    def set_layout(self, **changes):
+        """Layout editor changes: save now, rebuild the panel once the user pauses."""
+        lay = layout.current(self.settings)
+        lay.update(changes)
+        self.settings.set("layout", lay)
+        self._rebuild_timer.start()
+
+    def apply_preset(self, key):
+        self.settings.set("layout", dict(layout.PRESETS[key]["layout"]))
+        self.alert("\uE7C4", "Набор «" + layout.PRESETS[key]["title"] + "»", ttl=1.6)
+        QTimer.singleShot(30, self.rebuild)
+
+    def reset_settings(self):
+        keep = {"ai": self.settings.get("ai"), "onboarded": True}
+        self.settings.data = config._merge(config.DEFAULTS, keep)
+        self.settings.save()
+        QTimer.singleShot(30, self.rebuild)
 
     def open_command(self):
         if self.island.mode == "expanded" and self.island.panel.current.key == "command":
@@ -307,7 +341,7 @@ class App(QObject):
     def open_page(self, key, new_note=False):
         self.island.expand(key, focus=key in ("clipboard", "ai", "reminders"))
         if new_note:
-            self.island.panel.pages["notes"].new_note()
+            self.island.panel.page("notes").new_note()
 
     def copy_text(self, text):
         self.clipboard.set_text(text)
@@ -321,10 +355,10 @@ class App(QObject):
         self.island.collapse(restore_focus=True)
 
         def go():
-            if typing and winapi.is_window(target):
-                winapi.force_foreground(target)
-            winapi.wait_keys_released()
-            winapi.paste()
+            if typing and osapi.is_window(target):
+                osapi.focus_window(target)
+            osapi.wait_keys_released()
+            osapi.paste()
         QTimer.singleShot(90 if typing else 30, go)
 
     def start_timer(self, secs, label="Таймер"):
@@ -339,16 +373,16 @@ class App(QObject):
         import uuid
         self.store["notes"].insert(0, {"id": uuid.uuid4().hex[:10], "text": text, "t": time.time()})
         self.store.touch()
-        self.island.panel.pages["notes"].refresh()
+        self.island.panel.page("notes").refresh()
         self.alert("", "Заметка сохранена", text[:50])
 
     def ask_ai(self, text):
         self.island.expand("ai", focus=True)
-        self.island.panel.pages["ai"].ask(text)
+        self.island.panel.page("ai").ask(text)
 
     def translate(self, text):
         self.island.expand("ai", focus=True)
-        self.island.panel.pages["ai"].ask(text, translate=True)
+        self.island.panel.page("ai").ask(text, translate=True)
 
     def set_setting(self, path, value, rebuild=False):
         self.settings.set(path, value)
@@ -365,7 +399,7 @@ class App(QObject):
 
     def set_autostart(self, on):
         try:
-            winapi.set_autostart(on)
+            osapi.set_autostart(on)
             self.settings.set("autostart", bool(on))
         except OSError:
             pass
@@ -388,7 +422,7 @@ class App(QObject):
         self.a_hide.setChecked(self.island.isVisible())
 
     def lock(self):
-        winapi.lock_workstation()
+        osapi.lock_workstation()
 
     def quit(self):
         self.qapp.quit()
@@ -406,7 +440,7 @@ class App(QObject):
         import gc
         gc.disable()
         sys.stdout and sys.stdout.flush()
-        winapi.terminate_self(0)
+        osapi.terminate_self(0)
 
     # ------------------------------------------------------------ screen tools
 
@@ -434,7 +468,7 @@ class App(QObject):
             kind, val = res
             if kind == "saved":
                 self.alert("", "Скриншот сохранён", os.path.basename(val), ttl=4,
-                           action=lambda: os.startfile(val))
+                           action=lambda: osapi.open_path(val))
             else:
                 self.alert("", "Скриншот скопирован", f"{val.width()}×{val.height()}")
         self._with_screen(lambda s, pm: capture.ShotOverlay(s, pm, full=full), done)
@@ -448,7 +482,7 @@ class App(QObject):
             cols.insert(0, hexcol)
             del cols[30:]
             self.store.touch()
-            self.island.panel.pages["tools"].refresh_colors()
+            self.island.panel.page("tools").refresh_colors()
             c = QColor(hexcol)
             self.alert("", hexcol, f"rgb({c.red()}, {c.green()}, {c.blue()}) · скопирован", ttl=3,
                        swatch=hexcol)
@@ -466,7 +500,7 @@ class App(QObject):
                 return
             text = "\n".join(found)
             self.clipboard.set_text(text)
-            self.island.panel.pages["tools"].show_result(text)
+            self.island.panel.page("tools").show_result(text)
             url = found[0] if found[0].startswith(("http://", "https://")) else None
             import webbrowser
             self.alert("", found[0][:60], "скопировано" + (" · клик — открыть" if url else ""), ttl=6,
@@ -484,7 +518,7 @@ class App(QObject):
                     self.alert("", "Текст не найден", ttl=3)
                     return
                 self.clipboard.set_text(text)
-                self.island.panel.pages["tools"].show_result(text)
+                self.island.panel.page("tools").show_result(text)
                 self.alert("", "Текст скопирован", text[:50].replace("\n", " "), ttl=4,
                            action=lambda: self.island.expand("tools"))
 
@@ -497,7 +531,7 @@ class App(QObject):
         from .pages import make_qr
         img = make_qr(text)
         self.island.expand("tools")
-        self.island.panel.pages["tools"].show_result(text, img)
+        self.island.panel.page("tools").show_result(text, img)
         QApplication.clipboard().setImage(img)
         self.alert("", "QR-код скопирован как картинка", text[:40])
 
@@ -509,12 +543,12 @@ def _app_name(path):
     return base.replace(".exe", "")
 
 
-def single_instance():
-    """Returns a QLocalServer for the first instance, or None after poking the running one."""
+def single_instance(message=b"show"):
+    """Returns a QLocalServer for the first instance, or None after passing `message` to the running one."""
     sock = QLocalSocket()
     sock.connectToServer(SERVER_NAME)
     if sock.waitForConnected(300):
-        sock.write(b"show")
+        sock.write(message)
         sock.waitForBytesWritten(300)
         sock.disconnectFromServer()
         return None
@@ -524,23 +558,38 @@ def single_instance():
     return server
 
 
+def _serve(server, app):
+    def on_conn():
+        conn = server.nextPendingConnection()
+        if conn is None:
+            return
+        conn.waitForReadyRead(300)
+        msg = bytes(conn.readAll()).decode("utf-8", "replace").strip()
+        conn.disconnectFromServer()
+        app.hotkey(msg[7:] if msg.startswith("action:") else "show")
+    server.newConnection.connect(on_conn)
+
+
 def main():
-    if sys.platform != "win32":
-        print("Island работает только в Windows 10/11")
-        return 1
     import faulthandler
     os.makedirs(config.DATA_DIR, exist_ok=True)
     _crash_log = open(os.path.join(config.DATA_DIR, "crash.log"), "w", encoding="utf-8")
     faulthandler.enable(_crash_log)
+    if sys.platform.startswith("linux") and os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
+        # Wayland doesn't let clients place or raise their windows; XWayland does
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+    action = sys.argv[sys.argv.index("--action") + 1] if "--action" in sys.argv[:-1] else None
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     qapp = QApplication(sys.argv)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName("Island")
-    server = single_instance()
+    server = single_instance(f"action:{action}".encode() if action else b"show")
     if server is None:
         return 0
     app = App(qapp, sys.argv[1:])
-    server.newConnection.connect(lambda: (server.nextPendingConnection(), app.island.expand()))
+    _serve(server, app)
+    if action:
+        QTimer.singleShot(800, lambda: app.hotkey(action))
     qapp._island = app
     if "--demo" in sys.argv:
         from . import selftest

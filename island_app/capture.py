@@ -7,7 +7,7 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QWidget
 
-from . import config, winapi
+from . import config, osapi
 from . import widgets as W
 from .widgets import IconButton
 
@@ -39,7 +39,7 @@ class Overlay(QWidget):
         self.show()
         self.activateWindow()
         self.raise_()
-        winapi.force_foreground(int(self.winId()))
+        osapi.activate(self)
         self.setFocus()
 
     def keyPressEvent(self, e):

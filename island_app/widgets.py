@@ -1,6 +1,6 @@
 """Small reusable widgets drawn in the monochrome style."""
 from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, Property, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
@@ -130,6 +130,51 @@ class IconButton(QAbstractButton):
             fg = T.col("fg3")
         p.setPen(fg)
         p.drawText(r, Qt.AlignCenter, self.glyph)
+
+
+class TabButton(QAbstractButton):
+    """Panel tab: just the glyph, or glyph + title on an inverted pill when selected."""
+
+    def __init__(self, glyph, title):
+        super().__init__()
+        self.glyph, self.title = glyph, title
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(title)
+        self.setFixedHeight(T.s(34))
+        self._hover = False
+        self.toggled.connect(lambda _on: self.setFixedWidth(self.sizeHint().width()))
+        self.setFixedWidth(self.sizeHint().width())
+
+    def sizeHint(self):
+        w = T.s(34)
+        if self.isChecked():
+            w += QFontMetrics(T.font(12.5, 600)).horizontalAdvance(self.title) + T.s(12)
+        return QSize(w, T.s(34))
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        on = self.isChecked()
+        p.setPen(Qt.NoPen)
+        if on or self._hover:
+            p.setBrush(T.col("inv_bg") if on else T.col("hover"))
+            p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setPen(T.col("inv_fg") if on else (T.col("fg") if self._hover else T.col("fg2")))
+        p.setFont(T.icon_font(15))
+        p.drawText(QRectF(0, 0, T.s(34), r.height()), Qt.AlignCenter, self.glyph)
+        if on:
+            p.setFont(T.font(12.5, 600))
+            p.drawText(QRectF(T.s(30), 0, r.width() - T.s(30), r.height()), Qt.AlignVCenter | Qt.AlignLeft, self.title)
 
 
 class Toggle(QAbstractButton):

@@ -2,6 +2,7 @@
 import ctypes
 import ctypes.wintypes as wt
 import os
+import subprocess
 import sys
 import time
 import winreg
@@ -346,3 +347,148 @@ def wait_keys_released(timeout=0.6):
         if not any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x10, 0x11, 0x12, 0x5B)):
             return
         time.sleep(0.02)
+
+
+# ================================================================ portable interface (mirrored in linux.py)
+
+
+NAME = "Windows"
+IS_WINDOWS = True
+HAS_GLOBAL_HOTKEYS = True
+CAN_PASTE = True
+CAN_SET_DARK = True
+SETTINGS_LABEL = "Параметры Windows"
+TASKS_LABEL = "Диспетчер задач"
+AUTOSTART_LABEL = "Запускать с Windows"
+ICON_FAMILIES = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
+UI_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
+DISPLAY_FAMILIES = ("Segoe UI Variable Display", "Segoe UI")
+
+system_dark = windows_dark
+set_system_dark = set_windows_dark
+
+_MEDIA_VK = {"play": VK_MEDIA_PLAY, "next": VK_MEDIA_NEXT, "prev": VK_MEDIA_PREV,
+             "mute": VK_VOLUME_MUTE, "vol_down": VK_VOLUME_DOWN, "vol_up": VK_VOLUME_UP}
+
+
+def have(cmd):
+    import shutil
+    return shutil.which(cmd) is not None
+
+
+def run(args, timeout=3):
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout, creationflags=0x08000000)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def spawn(args):
+    try:
+        subprocess.Popen(args, creationflags=0x08000000)
+        return True
+    except OSError:
+        return False
+
+
+def media(name):
+    """Media / volume key by name: play, next, prev, mute, vol_down, vol_up."""
+    media_key(_MEDIA_VK[name])
+
+
+def noactivate(widget, on=True):
+    """Keep the window from taking focus when clicked (True) or let it take keyboard focus (False)."""
+    set_noactivate(int(widget.winId()), on)
+
+
+def activate(widget):
+    """Bring our own window to the foreground with keyboard focus."""
+    force_foreground(int(widget.winId()))
+
+
+def focus_window(handle):
+    return force_foreground(handle)
+
+
+def is_own(handle):
+    return bool(handle) and window_pid(handle) == os.getpid()
+
+
+def ensure_topmost(widget):
+    # HWND_TOPMOST, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+    user32.SetWindowPos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
+
+def register_hotkeys(widget, mapping):
+    """Register global hotkeys on the widget's window. Returns ({id: name}, [failed combos])."""
+    hwnd = int(widget.winId())
+    ids, failed = {}, []
+    for i, (name, combo) in enumerate(mapping.items(), start=1):
+        if combo:
+            if register_hotkey(hwnd, i, combo):
+                ids[i] = name
+            else:
+                failed.append(combo)
+    return ids, failed
+
+
+def unregister_hotkeys(widget, ids):
+    hwnd = int(widget.winId())
+    for hid in ids:
+        unregister_hotkey(hwnd, hid)
+
+
+def native_hotkey(event_type, message):
+    """Hotkey id from a nativeEvent() message, or None."""
+    if event_type in (b"windows_generic_MSG", "windows_generic_MSG"):
+        msg = wt.MSG.from_address(int(message))
+        if msg.message == WM_HOTKEY:
+            return int(msg.wParam)
+    return None
+
+
+def open_path(path):
+    os.startfile(path)
+
+
+def reveal(path):
+    subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+
+
+def open_system_settings():
+    os.startfile("ms-settings:")
+
+
+def open_task_manager():
+    subprocess.Popen(["taskmgr"])
+
+
+_FOLDERS = {"desktop": "Desktop", "documents": "Documents", "download": "Downloads", "pictures": "Pictures",
+            "music": "Music", "videos": "Videos"}
+
+
+def user_dir(kind):
+    """Known folders: desktop, documents, download, pictures, music, videos."""
+    return os.path.join(os.path.expanduser("~"), _FOLDERS[kind])
+
+
+def data_dir(app_name):
+    return os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), app_name)
+
+
+def _ps(cmd):
+    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                         capture_output=True, text=True, timeout=8, creationflags=0x08000000)
+    return out.stdout.strip()
+
+
+def get_brightness():
+    """Display brightness 0..100 or None (desktop monitors usually don't expose it). Blocking."""
+    v = _ps("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -EA Stop).CurrentBrightness")
+    return int(v.split()[0]) if v and v.split()[0].isdigit() else None
+
+
+def set_brightness(value):
+    _ps(f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods)"
+        f".WmiSetBrightness(1,{int(value)})")

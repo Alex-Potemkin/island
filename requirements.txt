@@ -4,14 +4,15 @@ pillow>=10
 pyzbar>=0.1.9
 qrcode>=7.4
 anthropic>=0.70
-winrt-runtime>=2.0
-winrt-Windows.Foundation>=2.0
-winrt-Windows.Foundation.Collections>=2.0
-winrt-Windows.Media.Control>=2.0
-winrt-Windows.Storage.Streams>=2.0
-winrt-Windows.Devices.Radios>=2.0
-winrt-Windows.Media.Ocr>=2.0
-winrt-Windows.Graphics.Imaging>=2.0
-winrt-Windows.Globalization>=2.0
+# Windows: media (SMTC), Wi-Fi/Bluetooth, OCR
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
+winrt-Windows.Devices.Radios>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
+winrt-Windows.Globalization>=2.0; sys_platform == "win32"
 # build only
 pyinstaller>=6.0

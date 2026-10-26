@@ -1,7 +1,10 @@
 """Monochrome palette, scale and the Qt stylesheet for the panel."""
+import os
+import sys
+
 from PySide6.QtGui import QColor, QFont, QFontDatabase
 
-from . import winapi
+from . import osapi
 
 DARK = {
     "bg": "#000000", "surface": "#0d0d0d", "raised": "#161616", "hover": "#1c1c1c", "active": "#2a2a2a",
@@ -15,18 +18,38 @@ LIGHT = {
 }
 
 
+_bundled = None
+
+
+def asset(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "island_app", "assets", name)
+
+
+def bundled_icon_family():
+    """IslandIcons.otf: Material icons at the Segoe Fluent codepoints (Linux, or Windows without Fluent)."""
+    global _bundled
+    if _bundled is None:
+        fid = QFontDatabase.addApplicationFont(asset("IslandIcons.otf"))
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        _bundled = fams[0] if fams else "Island Icons"
+    return _bundled
+
+
 class Theme:
     def __init__(self, settings):
         mode = settings.get("theme", "dark")
         if mode == "system":
-            mode = "dark" if winapi.windows_dark() else "light"
+            mode = "dark" if osapi.system_dark() else "light"
         self.dark = mode != "light"
         self.c = dict(DARK if self.dark else LIGHT)
         self.k = settings.scale
         fams = set(QFontDatabase.families())
-        self.icon_family = "Segoe Fluent Icons" if "Segoe Fluent Icons" in fams else "Segoe MDL2 Assets"
-        self.ui_family = "Segoe UI Variable Text" if "Segoe UI Variable Text" in fams else "Segoe UI"
-        self.display_family = "Segoe UI Variable Display" if "Segoe UI Variable Display" in fams else "Segoe UI"
+        default = QFontDatabase.systemFont(QFontDatabase.GeneralFont).family()
+        native = () if os.environ.get("ISLAND_BUNDLED_ICONS") else osapi.ICON_FAMILIES  # preview the Linux look
+        self.icon_family = next((f for f in native if f in fams), None) or bundled_icon_family()
+        self.ui_family = next((f for f in osapi.UI_FAMILIES if f in fams), default)
+        self.display_family = next((f for f in osapi.DISPLAY_FAMILIES if f in fams), self.ui_family)
 
     def s(self, v):
         return int(round(v * self.k))

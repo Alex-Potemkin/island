@@ -70,6 +70,14 @@ def run(app, argv):
         step(300, lambda k=key: isl().expand(k), None)
         step(1300 if key != "system" else 3200, None, f"1{i:01d}_{key}" if i < 10 else f"2{i - 10}_{key}")
     step(200, lambda: isl().collapse(), None)
+    # settings sections and first run
+    for i, name in ((1, "21_settings_builder"), (2, "22_settings_more")):
+        step(300, lambda i=i: (isl().expand("settings"), isl().panel.page("settings")._section(i)), None)
+        step(1200, None, name)
+    step(200, lambda: isl().collapse(), None)
+    step(600, lambda: isl().expand("welcome"), None)
+    step(1300, None, "08_welcome")
+    step(200, lambda: isl().collapse(), None)
     # command bar
     for name, q in (("30_cmd_empty", ""), ("31_cmd_timer", "таймер 10 мин"), ("32_cmd_remind", "напомни позвонить маме завтра в 9"),
                     ("33_cmd_calc", "2^10 + 15% от 200"), ("34_cmd_conv", "10 км в мили"), ("35_cmd_app", "блокнот")):
@@ -90,6 +98,14 @@ def run(app, argv):
     step(1300, lambda: isl().expand("home"), None)
     step(1300, None, "43_scale150_home")
     step(200, lambda: app.set_setting("scale", 100, rebuild=True), None)
+    step(900, lambda: (isl().panel.pin.setChecked(False), isl().collapse(), app.media.state.update(active=False, playing=False),
+                       app.media.changed.emit(app.media.state), app.set_layout(idle="clock")), None)
+    step(900, lambda: isl().collapse(), None)
+    step(1500, None, "09_idle_clock")
+    step(200, lambda: app.apply_preset("minimal"), None)
+    step(900, lambda: isl().expand("home"), None)
+    step(1300, None, "44_minimal_home")
+    step(200, lambda: isl().collapse(), None)
     step(1000, None, None)
 
     def runner(i=0):
@@ -134,6 +150,6 @@ def _sample_data(app):
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         app.store["shelf"].extend([os.path.join(here, "README.md"), os.path.join(here, "main.py"),
                                    os.path.join(here, "island_app")])
-        app.island.panel.pages["shelf"].refresh()
-    app.island.panel.pages["notes"].refresh()
+        app.island.panel.page("shelf").refresh()
+    app.island.panel.page("notes").refresh()
     app.store.touch()

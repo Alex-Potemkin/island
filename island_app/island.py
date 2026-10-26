@@ -3,15 +3,14 @@ and hosts the panel. All shape changes run through a small spring simulation."""
 import math
 import os
 import time
-import ctypes.wintypes as wt
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QComboBox, QGraphicsOpacityEffect, QHBoxLayout,
                                QLineEdit, QMenu, QPlainTextEdit, QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
-from . import pages, winapi
-from .widgets import IconButton
+from . import layout, osapi, pages
+from .widgets import IconButton, TabButton
 
 HOTKEY_IDS = {}
 
@@ -42,6 +41,9 @@ INPUT_TYPES = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox
 
 
 class Panel(QWidget):
+    """Tab bar + pages. Tabs follow the user's layout; pages that aren't tabs (welcome, command bar,
+    a tab the user switched off but opened from the command bar) are created on first use."""
+
     def __init__(self, island):
         super().__init__(island)
         self.island = island
@@ -51,28 +53,22 @@ class Panel(QWidget):
         self.pages = {}
         self.stack = QStackedWidget()
         self.tabs = {}
+        self.tab_keys = layout.current(app.settings)["tabs"] + ["settings"]
         tabrow = QHBoxLayout()
+        tabrow.setContentsMargins(0, 0, 0, 0)
         tabrow.setSpacing(T.s(2))
-        for cls in pages.PAGES:
-            page = cls(app)
-            self.pages[cls.key] = page
-            self.stack.addWidget(page)
-            b = IconButton(cls.glyph, cls.title, 34, 15, checkable=True)
-            b.clicked.connect(lambda _=False, k=cls.key: island.show_page(k))
-            self.tabs[cls.key] = b
+        for key in self.tab_keys:
+            if key == "settings":
+                tabrow.addStretch(1)
+            glyph, title = (layout.TABS[key][:2] if key in layout.TABS else ("\uE713", "Настройки"))
+            b = TabButton(glyph, title)
+            b.clicked.connect(lambda _=False, k=key: island.show_page(k))
+            self.tabs[key] = b
             tabrow.addWidget(b)
-            if cls.key in ("home", "reminders", "system"):
-                tabrow.addSpacing(T.s(8))
-        tabrow.addStretch(1)
-        self.title = QWidget()
-        self.pin = IconButton("", "Не сворачивать", 30, 13, checkable=True)
+        self.pin = IconButton("\uE718", "Не сворачивать", 30, 13, checkable=True)
         tabrow.addWidget(self.pin)
-        self.command = pages.CommandPage(app)
-        self.pages["command"] = self.command
-        self.stack.addWidget(self.command)
         self.tabbar = QWidget()
         self.tabbar.setLayout(tabrow)
-        tabrow.setContentsMargins(0, 0, 0, 0)
         lay = QVBoxLayout(self)
         m = T.s(16)
         lay.setContentsMargins(m, T.s(12), m, m)
@@ -83,9 +79,24 @@ class Panel(QWidget):
         self.effect.setOpacity(0.0)
         self.setGraphicsEffect(self.effect)
         self.current = None
+        self.command = self.page("command")
+
+    def page(self, key):
+        """The page for key, created on first use."""
+        if key not in self.pages:
+            from . import settings_ui
+            cls = (pages.PAGES.get(key) or {"settings": settings_ui.SettingsPage, "welcome": settings_ui.WelcomePage,
+                                            "command": pages.CommandPage}[key])
+            self.pages[key] = cls(self.island.app)
+            self.stack.addWidget(self.pages[key])
+        return self.pages[key]
+
+    def teardown(self):
+        for p in self.pages.values():
+            p.teardown()
 
     def select(self, key):
-        page = self.pages[key]
+        page = self.page(key)
         if self.current is not page:
             if self.current:
                 self.current.on_hide()
@@ -93,13 +104,13 @@ class Panel(QWidget):
             self.stack.setCurrentWidget(page)
         for k, b in self.tabs.items():
             b.setChecked(k == key)
-        self.tabbar.setVisible(key != "command")
+        self.tabbar.setVisible(key not in ("command", "welcome"))
         page.on_show()
 
     def content_height(self):
         T = self.island.app.theme
         h = T.s(self.current.page_height()) + T.s(12) + T.s(16)
-        if self.current.key != "command":
+        if self.tabbar.isVisibleTo(self):
             h += T.s(34) + T.s(10)
         return h
 
@@ -126,6 +137,7 @@ class Island(QWidget):
         self._fs_hidden = False
         self._last_live = None
         self._art_cache = (None, None)
+        self._fg_tick = 0
         T = self.T
         self.pad = T.s(34)
         self.max_w = T.s(760)
@@ -140,6 +152,8 @@ class Island(QWidget):
         self._live_anim = QTimer(self, interval=33, timeout=self.update)
         self._poll = QTimer(self, interval=40, timeout=self._poll_cursor)
         self._poll.start()
+        self._clock = QTimer(self, interval=5000, timeout=self._clock_tick)
+        self._clock.start()
         self.place()
         self.retarget(snap=True)
 
@@ -178,7 +192,7 @@ class Island(QWidget):
         elif self.mode == "hidden":
             w, h, r, y, o = T.s(120), T.s(5), T.s(2.5), 0.0, 0.0
         else:
-            w, h, r, y, o = T.s(124), T.s(30), T.s(15), self._top(), 0.0
+            w, h, r, y, o = self.idle_width(), T.s(30), T.s(15), self._top(), 0.0
         s["w"].target, s["h"].target, s["r"].target, s["y"].target, s["o"].target = w, h, r, y, o
         if self.mode == "expanded":
             tr = self.target_rect()
@@ -189,6 +203,7 @@ class Island(QWidget):
             for sp in s.values():
                 sp.snap()
             self._apply_panel_opacity()
+            self._update_mask()
             self.update()
         elif not self._anim.isActive():
             self._last_t = time.monotonic()
@@ -208,6 +223,7 @@ class Island(QWidget):
             for sp in self.springs.values():
                 sp.step(dt / 3)
         self._apply_panel_opacity()
+        self._update_mask()
         self.update()
         if all(sp.settled() for sp in self.springs.values()):
             for sp in self.springs.values():
@@ -217,6 +233,16 @@ class Island(QWidget):
             if self.mode != "expanded":
                 self.panel.hide()
             self.update()
+
+    def _update_mask(self):
+        """Windows passes clicks through transparent pixels by itself; X11 needs an explicit shape."""
+        if osapi.IS_WINDOWS:
+            return
+        r = self.shape_rect().adjusted(-1, -1, 1, 1)
+        rad = min(self.springs["r"].v, r.height() / 2) + 1
+        path = QPainterPath()
+        path.addRoundedRect(r, rad, rad)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _apply_panel_opacity(self):
         if self.mode == "expanded":
@@ -240,7 +266,7 @@ class Island(QWidget):
         rad = min(self.springs["r"].v, r.height() / 2)
         big = r.height() > T.s(60)
         # soft shadow
-        if big or not T.dark:
+        if (big or not T.dark) and osapi.IS_WINDOWS:
             layers = 10 if big else 4
             base = T.c["shadow"] if big else T.c["shadow"] // 3
             for i in range(layers, 0, -1):
@@ -254,6 +280,12 @@ class Island(QWidget):
         p.drawRoundedRect(r, rad, rad)
         if self.mode in ("live", "idle") and r.height() > T.s(20):
             self.paint_live(p, r)
+
+    def _clock_tick(self):
+        if self.mode == "idle" and self.idle_text():
+            if abs(self.springs["w"].target - self.idle_width()) > 1:
+                self.retarget()
+            self.update()
 
     def _content_alpha(self, r):
         tr = self.target_rect()
@@ -278,6 +310,22 @@ class Island(QWidget):
         right = T.s(30) if kind in ("claude",) else 0
         w = T.s(14) + T.s(22) + T.s(10) + text + (T.s(8) + sub if sub else 0) + right + T.s(18) + dots
         return max(T.s(150), min(T.s(480), w))
+
+    def idle_text(self):
+        idle = layout.current(self.app.settings)["idle"]
+        now = time.localtime()
+        if idle == "clock":
+            return time.strftime("%H:%M", now)
+        if idle == "date":
+            days = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+            return f"{days[now.tm_wday]}, {now.tm_mday}  ·  {time.strftime('%H:%M', now)}"
+        return ""
+
+    def idle_width(self):
+        text = self.idle_text()
+        if not text:
+            return self.T.s(124)
+        return max(self.T.s(124), QFontMetrics(self.T.tabular(13)).horizontalAdvance(text) + self.T.s(44))
 
     def _dots_width(self):
         st = self.app.privacy
@@ -308,6 +356,12 @@ class Island(QWidget):
                 right -= T.s(12)
         if live and self.mode == "live":
             getattr(self, "_live_" + live["kind"], self._live_alert)(p, r, live, right)
+        elif self.mode == "idle":
+            text = self.idle_text()
+            if text:
+                p.setFont(T.tabular(13))
+                p.setPen(T.col("fg"))
+                p.drawText(r, Qt.AlignCenter, text)
         p.restore()
 
     def _icon(self, p, rect, glyph, color="fg", px=15):
@@ -491,9 +545,9 @@ class Island(QWidget):
             self.panel.current.on_hide()
         if self.input_mode:
             self.input_mode = False
-            winapi.set_noactivate(int(self.winId()), True)
-            if restore_focus and winapi.is_window(self.prev_hwnd):
-                winapi.force_foreground(self.prev_hwnd)
+            osapi.noactivate(self, True)
+            if restore_focus and osapi.is_window(self.prev_hwnd):
+                osapi.focus_window(self.prev_hwnd)
         self.mode = self.resting_mode()
         self._last_live = None
         self._hover_since = None
@@ -512,15 +566,14 @@ class Island(QWidget):
 
     def focus_input(self, widget=None):
         """Let the panel take keyboard focus (only while the user is typing in it)."""
-        hwnd = int(self.winId())
         if not self.input_mode:
-            fg = winapi.foreground()
-            if fg and fg != hwnd and winapi.window_pid(fg) != os.getpid():
+            fg = osapi.foreground()
+            if fg and not osapi.is_own(fg):
                 self.prev_hwnd = fg
             self.input_mode = True
-            winapi.set_noactivate(hwnd, False)
+            osapi.noactivate(self, False)
         self.activateWindow()
-        winapi.force_foreground(hwnd)
+        osapi.activate(self)
         if widget is not None:
             widget.setFocus(Qt.MouseFocusReason)
 
@@ -533,9 +586,7 @@ class Island(QWidget):
             self.ensure_topmost()
 
     def ensure_topmost(self):
-        hwnd = int(self.winId())
-        # HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE
-        winapi.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        osapi.ensure_topmost(self)
 
     # ------------------------------------------------------------ hover logic
 
@@ -546,9 +597,11 @@ class Island(QWidget):
     def _poll_cursor(self):
         if self._fs_hidden or not self.isVisible() or self.app.demo:
             return
-        fg = winapi.foreground()
-        if fg and fg != int(self.winId()) and winapi.window_pid(fg) != os.getpid():
-            self.prev_hwnd = fg
+        self._fg_tick += 1
+        if osapi.IS_WINDOWS or self._fg_tick % 12 == 0:  # on Linux this spawns xdotool, so poll slower
+            fg = osapi.foreground()
+            if fg and not osapi.is_own(fg):
+                self.prev_hwnd = fg
         pos = QCursor.pos()
         T = self.T
         shape = self._global_shape()
@@ -556,6 +609,7 @@ class Island(QWidget):
         if self.mode == "expanded":
             zone = shape.adjusted(-T.s(16), -T.s(40), T.s(16), T.s(18))
             busy = (self._hold or self.dragging or self.input_mode or self.panel.pin.isChecked()
+                    or self.panel.current.key == "welcome"
                     or QApplication.activePopupWidget() is not None
                     or QApplication.mouseButtons() != Qt.NoButton)
             if zone.contains(pos) or busy:
@@ -628,7 +682,7 @@ class Island(QWidget):
             self.collapse(restore_focus=True)
             return
         if e.modifiers() & Qt.ControlModifier and Qt.Key_1 <= e.key() <= Qt.Key_9:
-            keys = [c.key for c in pages.PAGES]
+            keys = self.panel.tab_keys
             i = e.key() - Qt.Key_1
             if i < len(keys):
                 self.show_page(keys[i])
@@ -645,7 +699,7 @@ class Island(QWidget):
         if self.isActiveWindow() or QApplication.activePopupWidget() is not None or self._hold:
             return
         self.input_mode = False
-        winapi.set_noactivate(int(self.winId()), True)
+        osapi.noactivate(self, True)
         if not self.shape_rect().contains(self.mapFromGlobal(QCursor.pos())):
             self.collapse()
 
@@ -668,39 +722,30 @@ class Island(QWidget):
         paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
         if paths:
             e.acceptProposedAction()
-            self.panel.pages["shelf"].add(paths)
+            self.panel.page("shelf").add(paths)
             self.app.alert("", f"На полке: {len(paths)}", os.path.basename(paths[0]))
 
     # ------------------------------------------------------------ hotkeys
 
     def register_hotkeys(self, mapping):
-        hwnd = int(self.winId())
-        for hid in list(HOTKEY_IDS):
-            winapi.unregister_hotkey(hwnd, hid)
+        osapi.unregister_hotkeys(self, list(HOTKEY_IDS))
         HOTKEY_IDS.clear()
-        failed = []
-        for i, (name, combo) in enumerate(mapping.items(), start=1):
-            if not combo:
-                continue
-            if winapi.register_hotkey(hwnd, i, combo):
-                HOTKEY_IDS[i] = name
-            else:
-                failed.append(combo)
+        ids, failed = osapi.register_hotkeys(self, mapping)
+        HOTKEY_IDS.update(ids)
         return failed
 
     def nativeEvent(self, event_type, message):
-        if event_type == b"windows_generic_MSG" or event_type == "windows_generic_MSG":
-            msg = wt.MSG.from_address(int(message))
-            if msg.message == winapi.WM_HOTKEY:
-                name = HOTKEY_IDS.get(int(msg.wParam))
-                if name:
-                    QTimer.singleShot(0, lambda: self.app.hotkey(name))
-                return True, 0
+        hid = osapi.native_hotkey(event_type, message)
+        if hid is not None:
+            name = HOTKEY_IDS.get(hid)
+            if name:
+                QTimer.singleShot(0, lambda: self.app.hotkey(name))
+            return True, 0
         return False, 0
 
     def showEvent(self, e):
         super().showEvent(e)
-        winapi.set_noactivate(int(self.winId()), True)
+        osapi.noactivate(self, True)
         self.ensure_topmost()
 
 

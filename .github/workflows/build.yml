@@ -1,0 +1,89 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # oldest supported runner = widest glibc compatibility for the binary
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 \
+            libzbar0 tesseract-ocr xdotool fonts-noto-core
+
+      - name: Python packages
+        run: python -m pip install -r requirements.txt
+
+      - name: Tool checks (parsers, QR, OCR, screenshot, picker)
+        timeout-minutes: 5
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_tools.py
+
+      - name: Demo run with screenshots (from source)
+        timeout-minutes: 6
+        run: |
+          export ISLAND_HOME=$(mktemp -d)
+          xvfb-run -a -s "-screen 0 1920x1080x24" python main.py --demo --exit --out ci-shots/source
+          test "$(ls ci-shots/source | wc -l)" -ge 30
+
+      - name: Build the binary
+        run: python build_exe.py
+
+      - name: Test the binary
+        timeout-minutes: 6
+        run: |
+          export ISLAND_HOME=$(mktemp -d)
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./Island-linux-x86_64 --demo --exit --out ci-shots/binary
+          test "$(ls ci-shots/binary | wc -l)" -ge 30
+          test -f "$ISLAND_HOME/data.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Island-linux
+          path: |
+            Island-linux-x86_64
+            ci-shots/
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" Island-linux-x86_64 --clobber
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m pip install -r requirements.txt
+      - name: Tool checks
+        run: python tests/check_tools.py
+      - name: Build
+        run: python build_exe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Island-windows
+          path: Island.exe
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${env:GITHUB_REF_NAME}" Island.exe --clobber

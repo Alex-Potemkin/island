@@ -9,16 +9,20 @@ import sys
 import threading
 import time
 
+from . import layout, osapi
+
 APP_NAME = "Island"
 APP_VERSION = "1.0.0"
 
-DATA_DIR = os.environ.get("ISLAND_HOME") or os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), APP_NAME)
+DATA_DIR = os.environ.get("ISLAND_HOME") or osapi.data_dir(APP_NAME)
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 DATA_PATH = os.path.join(DATA_DIR, "data.json")
 CLIP_DIR = os.path.join(DATA_DIR, "clips")
-SHOTS_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "Island")
+SHOTS_DIR = os.path.join(osapi.user_dir("pictures"), "Island")
 
 DEFAULTS = {
+    "onboarded": False,         # the welcome screen was completed
+    "layout": dict(layout.DEFAULT),   # panel tabs, home cards, quick buttons, resting pill (see layout.py)
     "theme": "dark",            # dark | light | system
     "scale": 100,               # 80..200 %
     "autohide": False,          # idle pill shrinks to a thin line at the top edge
@@ -67,6 +71,8 @@ def _atomic_write(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
+    if not osapi.IS_WINDOWS:
+        os.chmod(tmp, 0o600)  # may hold the API key in plain text on Linux
     for _ in range(20):  # the file watcher / an editor may hold the target for a moment
         try:
             os.replace(tmp, path)

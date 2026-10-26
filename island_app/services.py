@@ -1,8 +1,14 @@
-"""Background data sources: media (SMTC), radios, OCR, system stats, weather, downloads, Claude Code hooks."""
+"""Background data sources: media, radios, OCR, system stats, weather, downloads, Claude Code hooks.
+
+Media, radios and OCR have a Windows (WinRT) and a Linux (playerctl / nmcli / tesseract) variant;
+the public names Media, Radios and ocr_png point to the one for this OS."""
 import io
 import json
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -12,12 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import bridge, winapi
+from . import bridge, osapi
 
 # ---------------------------------------------------------------- media (Windows SMTC)
 
 
-class Media(QObject):
+class _WinMedia(QObject):
     """Now playing via GlobalSystemMediaTransportControls — works with Spotify, browsers, players."""
     changed = Signal(object)
 
@@ -84,23 +90,102 @@ class Media(QObject):
         else:
             self.state = st
 
-    def _control(self, name, fallback_vk):
+    def _control(self, name, key):
         async def go():
             s = await self._session()
             if s is None:
-                winapi.media_key(fallback_vk)
+                osapi.media(key)
                 return
             await getattr(s, name)()
-        bridge.run_async(go(), lambda _r: QTimer.singleShot(250, self.poll), lambda _e: winapi.media_key(fallback_vk))
+        bridge.run_async(go(), lambda _r: QTimer.singleShot(250, self.poll), lambda _e: osapi.media(key))
 
     def toggle(self):
-        self._control("try_toggle_play_pause_async", winapi.VK_MEDIA_PLAY)
+        self._control("try_toggle_play_pause_async", "play")
 
     def next(self):
-        self._control("try_skip_next_async", winapi.VK_MEDIA_NEXT)
+        self._control("try_skip_next_async", "next")
 
     def prev(self):
-        self._control("try_skip_previous_async", winapi.VK_MEDIA_PREV)
+        self._control("try_skip_previous_async", "prev")
+
+
+class _LinuxMedia(QObject):
+    """Now playing via MPRIS (playerctl): Spotify, browsers, VLC, any MPRIS player."""
+    changed = Signal(object)
+    SEP = "\x1f"
+    FMT = SEP.join(["{{status}}", "{{xesam:title}}", "{{xesam:artist}}", "{{xesam:album}}", "{{mpris:artUrl}}",
+                    "{{position}}", "{{mpris:length}}", "{{playerName}}"])
+
+    def __init__(self):
+        super().__init__()
+        self.state = {"active": False}
+        self._art_key = None
+        self._art = b""
+        self._busy = False
+        self._timer = QTimer(self, interval=1000, timeout=self.poll)
+        if osapi.have("playerctl"):
+            self._timer.start()
+            self.poll()
+
+    def poll(self):
+        if not self._busy:
+            self._busy = True
+            bridge.run_thread(self._read, self._got, lambda _e: setattr(self, "_busy", False))
+
+    def _read(self):
+        parts = osapi.run(["playerctl", "metadata", "--format", self.FMT], 2).split(self.SEP)
+        if len(parts) < 8 or parts[0] not in ("Playing", "Paused"):
+            return {"active": False}
+        status, title, artist, album, art, pos, length, player = parts[:8]
+        out = {"active": True, "title": title, "artist": artist, "album": album, "playing": status == "Playing",
+               "app": player, "position": _num(pos) / 1e6, "duration": _num(length) / 1e6, "stamp": time.time()}
+        key = (title, artist, album)
+        if key != self._art_key:
+            self._art_key = key
+            self._art = _fetch_art(art)
+        out["art"] = self._art
+        return out
+
+    def _got(self, st):
+        self._busy = False
+        if _media_sig(st) != _media_sig(self.state) or abs(st.get("position", 0) - self.state.get("position", 0)) > 2:
+            self.state = st
+            self.changed.emit(st)
+        else:
+            self.state = st
+
+    def _control(self, key):
+        osapi.media(key)
+        QTimer.singleShot(250, self.poll)
+
+    def toggle(self):
+        self._control("play")
+
+    def next(self):
+        self._control("next")
+
+    def prev(self):
+        self._control("prev")
+
+
+def _num(v):
+    try:
+        return float(v)
+    except ValueError:
+        return 0.0
+
+
+def _fetch_art(url):
+    try:
+        if url.startswith("file://"):
+            with open(urllib.parse.unquote(url[7:]), "rb") as f:
+                return f.read()
+        if url.startswith(("http://", "https://")):
+            with urllib.request.urlopen(url, timeout=4) as r:
+                return r.read(4_000_000)
+    except (OSError, ValueError):
+        pass
+    return b""
 
 
 def _media_sig(st):
@@ -136,7 +221,7 @@ async def _read_stream(ref):
 RADIO_WIFI, RADIO_BT = 1, 3
 
 
-class Radios(QObject):
+class _WinRadios(QObject):
     changed = Signal(object)   # {kind: bool}
 
     def __init__(self):
@@ -171,9 +256,48 @@ class Radios(QObject):
         bridge.run_async(go(), self._set, lambda _e: self.refresh())
 
 
+class _LinuxRadios(QObject):
+    """Wi-Fi through NetworkManager (nmcli), Bluetooth through bluetoothctl (or rfkill)."""
+    changed = Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self.state = {}
+        self.refresh()
+
+    @staticmethod
+    def _read():
+        st = {}
+        wifi = osapi.run(["nmcli", "radio", "wifi"], 2)
+        if wifi in ("enabled", "disabled"):
+            st[RADIO_WIFI] = wifi == "enabled"
+        bt = osapi.run(["bluetoothctl", "show"], 2)
+        if "Powered:" in bt:
+            st[RADIO_BT] = "Powered: yes" in bt
+        return st
+
+    def refresh(self):
+        bridge.run_thread(self._read, self._set, lambda _e: None)
+
+    def _set(self, st):
+        self.state = st
+        self.changed.emit(st)
+
+    def set(self, kind, on):
+        def work():
+            if kind == RADIO_WIFI:
+                osapi.run(["nmcli", "radio", "wifi", "on" if on else "off"], 5)
+            elif kind == RADIO_BT:
+                if not osapi.run(["bluetoothctl", "power", "on" if on else "off"], 5):
+                    osapi.run(["rfkill", "unblock" if on else "block", "bluetooth"], 3)
+            time.sleep(0.5)
+            return self._read()
+        bridge.run_thread(work, self._set, lambda _e: self.refresh())
+
+
 # ---------------------------------------------------------------- OCR (Windows.Media.Ocr, offline)
 
-def ocr_png(png_bytes, done, failed):
+def _win_ocr_png(png_bytes, done, failed):
     async def go():
         from winrt.windows.graphics.imaging import BitmapDecoder
         from winrt.windows.media.ocr import OcrEngine
@@ -193,6 +317,30 @@ def ocr_png(png_bytes, done, failed):
         result = await engine.recognize_async(bmp)
         return "\n".join(line.text for line in result.lines)
     bridge.run_async(go(), done, failed)
+
+
+def _linux_ocr_png(png_bytes, done, failed):
+    def work():
+        if not osapi.have("tesseract"):
+            raise RuntimeError("установите tesseract-ocr")
+        langs = osapi.run(["tesseract", "--list-langs"], 5).split()
+        lang = "+".join(code for code in ("rus", "eng") if code in langs) or "eng"
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(png_bytes)
+            path = f.name
+        try:
+            out = subprocess.run(["tesseract", path, "stdout", "-l", lang], capture_output=True, text=True,
+                                 timeout=60)
+            return out.stdout.strip()
+        finally:
+            os.remove(path)
+    bridge.run_thread(work, done, failed)
+
+
+if sys.platform == "win32":
+    Media, Radios, ocr_png = _WinMedia, _WinRadios, _win_ocr_png
+else:
+    Media, Radios, ocr_png = _LinuxMedia, _LinuxRadios, _linux_ocr_png
 
 
 # ---------------------------------------------------------------- system monitor
@@ -332,12 +480,12 @@ class SysWatch(QObject):
 
     def __init__(self):
         super().__init__()
-        self.layout = winapi.keyboard_layout()
-        self.caps = winapi.caps_lock()
+        self.layout = osapi.keyboard_layout()
+        self.caps = osapi.caps_lock()
         self.mic, self.cam = [], []
         self.fullscreen = False
         self.pid = os.getpid()
-        self.dl_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        self.dl_dir = osapi.user_dir("download")
         self._partials = {}
         self._dl_names = set(self._list_dl())
         self._fast = QTimer(self, interval=150, timeout=self._poll_fast)
@@ -346,22 +494,22 @@ class SysWatch(QObject):
         self._slow.start()
 
     def _poll_fast(self):
-        lay = winapi.keyboard_layout()
-        if lay != self.layout and lay != "??":
+        lay = osapi.keyboard_layout()
+        if lay and lay != self.layout and lay != "??":
             self.layout = lay
             self.layout_changed.emit(lay)
-        caps = winapi.caps_lock()
+        caps = osapi.caps_lock()
         if caps != self.caps:
             self.caps = caps
             self.caps_changed.emit(caps)
 
     def _poll_slow(self):
-        mic, cam = winapi.privacy_state()
+        mic, cam = osapi.privacy_state()
         mic = [m for m in mic if "island" not in m.lower()]
         if (mic, cam) != (self.mic, self.cam):
             self.mic, self.cam = mic, cam
             self.privacy_changed.emit(mic, cam)
-        fs = winapi.foreground_is_fullscreen(self.pid)
+        fs = osapi.foreground_is_fullscreen(self.pid)
         if fs != self.fullscreen:
             self.fullscreen = fs
             self.fullscreen_changed.emit(fs)
@@ -455,25 +603,14 @@ class HookServer(QObject):
             self.server.shutdown()
 
 
-# ---------------------------------------------------------------- brightness (laptops; WMI through PowerShell)
-
-def _ps(cmd):
-    import subprocess
-    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-                         capture_output=True, text=True, timeout=8, creationflags=0x08000000)
-    return out.stdout.strip()
-
+# ---------------------------------------------------------------- brightness (laptops)
 
 def get_brightness(done):
-    def work():
-        v = _ps("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -EA Stop).CurrentBrightness")
-        return int(v.split()[0]) if v and v.split()[0].isdigit() else None
-    bridge.run_thread(work, done, lambda _e: done(None))
+    bridge.run_thread(osapi.get_brightness, done, lambda _e: done(None))
 
 
 def set_brightness(value):
-    bridge.run_thread(lambda: _ps(
-        f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods).WmiSetBrightness(1,{int(value)})"))
+    bridge.run_thread(osapi.set_brightness, None, None, value)
 
 
 def png_bytes(qimage):

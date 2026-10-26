@@ -2,16 +2,15 @@
 import calendar
 import datetime as dt
 import os
-import subprocess
 import time
 
 from PySide6.QtCore import QFileInfo, QMimeData, QRectF, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QFont, QImage, QPainter, QPen, QPixmap, QTextCursor
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileIconProvider, QGridLayout, QHBoxLayout,
-                               QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QScrollArea,
+from PySide6.QtWidgets import (QAbstractItemView, QFileIconProvider, QGridLayout, QHBoxLayout,
+                               QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
                                QSlider, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
-from . import commands, config, features, services, winapi
+from . import commands, features, layout, osapi, services
 from . import widgets as W
 from .widgets import IconButton, button, card, hbox, label, vbox
 
@@ -152,118 +151,224 @@ class ProgressLine(QWidget):
 
 
 class HomePage(Page):
-    key, glyph, title, height = "home", "", "Главная", 268
+    """Cards and quick buttons come from the user's layout (settings → Конструктор)."""
+    key, glyph, title = "home", "", "Главная"
+    CARD_H = 206
 
     def build(self):
         T = self.T
-        # now playing
-        self.music = card()
-        ml = _card_layout(self.music, 14, 10)
-        self.art = W.Art(64, 14)
-        self.m_title = label("Ничего не играет", "h2")
-        self.m_artist = label("Включите музыку в любом плеере", "muted")
-        self.m_pos = label("", "faint")
-        top = hbox(self.art, vbox(self.m_title, self.m_artist, self.m_pos, spacing=2), "stretch", spacing=12)
-        self.prog = ProgressLine()
-        self.b_prev = IconButton("", "Назад", 34, 14, self.app.media.prev)
-        self.b_play = IconButton("", "Пауза / воспроизведение", 40, 16, self.app.media.toggle, filled=True)
-        self.b_next = IconButton("", "Вперёд", 34, 14, self.app.media.next)
-        ml.addWidget(top)
-        ml.addWidget(self.prog)
-        ml.addWidget(hbox("stretch", self.b_prev, self.b_play, self.b_next, "stretch", spacing=10))
-        # clock + weather + agenda
-        self.clock = card()
-        cl = _card_layout(self.clock, 14, 2)
-        self.c_time = label("", "h1")
-        self.c_time.setFont(T.tabular(30))
-        self.c_date = label("", "muted")
-        self.c_weather = label("", "muted")
-        self.c_weather.setWordWrap(True)
-        self.c_next = label("", "faint")
-        self.c_next.setWordWrap(True)
-        for w in (self.c_time, self.c_date, 6, self.c_weather, "stretch", self.c_next):
-            cl.addSpacing(T.s(w)) if isinstance(w, int) else (cl.addStretch(1) if w == "stretch" else cl.addWidget(w))
-        # calendar
-        self.cal = card()
-        _card_layout(self.cal, 14).addWidget(MiniCalendar(self.app))
-        row = QHBoxLayout()
-        row.setSpacing(T.s(10))
-        row.addWidget(self.music, 13)
-        row.addWidget(self.clock, 9)
-        row.addWidget(self.cal, 9)
-        # quick actions
-        acts = [("", "Скриншот", self.app.screenshot), ("", "Пипетка", self.app.color_picker),
-                ("", "QR с экрана", self.app.scan_qr), ("", "Текст с экрана", self.app.ocr),
-                ("", "Таймер 5 мин", lambda: self.app.start_timer(300, "Таймер")),
-                ("", "Новая заметка", lambda: self.app.open_page("notes", new_note=True)),
-                ("", "Командная строка  Alt+Space", self.app.open_command)]
+        lay = layout.current(self.app.settings)
+        self.cards = lay["home"]
+        self.quick = lay["quick"]
+        self.refreshers = []
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(T.s(10))
+        per_row = self._per_row()
+        for i, key in enumerate(self.cards):
+            w = getattr(self, "_card_" + key)()
+            grid.addWidget(w, i // per_row, i % per_row)
+        for c in range(per_row):
+            grid.setColumnStretch(c, 13 if (c == 0 and self.cards[:1] == ["music"]) else 9)
         quick = QHBoxLayout()
         quick.setSpacing(T.s(6))
-        for g, tip, fn in acts:
-            quick.addWidget(IconButton(g, tip, 34, 15, fn))
+        for key in self.quick:
+            glyph, title = layout.QUICK[key]
+            quick.addWidget(IconButton(glyph, title, 34, 15, lambda _=False, k=key: self.app.quick_action(k)))
         quick.addStretch(1)
         self.c_sys = label("", "faint")
         quick.addWidget(self.c_sys)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(T.s(10))
-        lay.addLayout(row, 1)
-        lay.addLayout(quick)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(T.s(10))
+        if self.cards:
+            root.addLayout(grid, 1)
+        else:
+            empty = label("Карточек нет — добавьте их в Настройки → Конструктор", "muted")
+            empty.setAlignment(Qt.AlignCenter)
+            root.addWidget(empty, 1)
+        root.addLayout(quick)
         self._tick = QTimer(self, interval=1000, timeout=self.refresh)
-        self.listen(self.app.media.changed, lambda _s: self.refresh_media())
+        self.listen(self.app.media.changed, lambda _s: self.refresh())
         self.listen(self.app.weather.changed, lambda _s: self.refresh())
+        self.listen(self.app.reminders.changed, self.refresh)
+
+    def _per_row(self):
+        n = len(self.cards)
+        return max(1, n if n <= 3 else (2 if n == 4 else 3))
+
+    def page_height(self):
+        n = len(self.cards)
+        rows = max(1, -(-n // self._per_row()))
+        return rows * self.CARD_H + (rows - 1) * 10 + 44
 
     def on_show(self):
-        self.refresh_media()
         self.refresh()
         self._tick.start()
 
     def on_hide(self):
         self._tick.stop()
 
-    def refresh_media(self):
-        st = self.app.media.state
-        if st.get("active"):
-            _elide(self.m_title, st.get("title") or "Без названия", 230)
-            _elide(self.m_artist, st.get("artist") or st.get("app", ""), 230)
-            self.art.set_bytes(st.get("art"))
-            self.b_play.setGlyph("" if st.get("playing") else "")
-        else:
-            self.m_title.setText("Ничего не играет")
-            self.m_artist.setText("Включите музыку в любом плеере")
-            self.art.set_bytes(None)
-            self.b_play.setGlyph("")
-            self.m_pos.setText("")
-            self.prog.set(0)
-        for b in (self.b_prev, self.b_next):
-            b.setEnabled(bool(st.get("active")))
-
     def refresh(self):
-        now = dt.datetime.now()
-        self.c_time.setText(now.strftime("%H:%M"))
-        self.c_date.setText(f"{WEEKDAYS[now.weekday()].capitalize()}, {now.day} {MONTHS_GEN[now.month - 1]}")
-        w = self.app.weather.state
-        if w:
-            t = f"{w['temp']:+d}°"
-            self.c_weather.setText(f"{t}  {w['text']}\n{w['city']} · {w['min']:+d}°…{w['max']:+d}°")
-        else:
-            self.c_weather.setText("")
-        nxt = []
-        if self.app.timer.active:
-            nxt.append(f"{self.app.timer.label or 'Таймер'}: {self.app.timer.display()}")
-        up = self.app.reminders.upcoming()
-        if up:
-            nxt.append(f"{up[0]['text']} — {features.fmt_when(up[0]['at'])}")
-        self.c_next.setText("\n".join(nxt))
-        st = self.app.media.state
-        if st.get("active") and st.get("duration"):
-            pos = st.get("position", 0) + ((time.time() - st.get("stamp", time.time())) if st.get("playing") else 0)
-            pos = min(pos, st["duration"])
-            self.prog.set(pos / st["duration"])
-            self.m_pos.setText(f"{features.fmt_secs(pos)} / {features.fmt_secs(st['duration'])}")
+        for fn in self.refreshers:
+            fn()
         mon = self.app.monitor
-        self.c_sys.setText(f"CPU {mon.cpu[-1]:.0f}%   RAM {mon.ram[-1]:.0f}%   "
-                           f"↓ {services.human_bytes(mon.down[-1], True)}")
+        self.c_sys.setText("" if "system" in self.cards else
+                           f"CPU {mon.cpu[-1]:.0f}%   RAM {mon.ram[-1]:.0f}%   ↓ {services.human_bytes(mon.down[-1], True)}")
+
+    # ------------------------------------------------------------ cards
+
+    def _card_music(self):
+        c = card()
+        ml = _card_layout(c, 14, 10)
+        art = W.Art(64, 14)
+        title = label("Ничего не играет", "h2")
+        artist = label("Включите музыку в любом плеере", "muted")
+        pos = label("", "faint")
+        top = hbox(art, vbox(title, artist, pos, spacing=2), "stretch", spacing=12)
+        prog = ProgressLine()
+        prev = IconButton("", "Назад", 34, 14, self.app.media.prev)
+        play = IconButton("", "Пауза / воспроизведение", 40, 16, self.app.media.toggle, filled=True)
+        nxt = IconButton("", "Вперёд", 34, 14, self.app.media.next)
+        ml.addWidget(top)
+        ml.addWidget(prog)
+        ml.addWidget(hbox("stretch", prev, play, nxt, "stretch", spacing=10))
+        state = {"art": None}
+
+        def refresh():
+            st = self.app.media.state
+            if st.get("active"):
+                _elide(title, st.get("title") or "Без названия", 200)
+                _elide(artist, st.get("artist") or st.get("app", ""), 200)
+                if state["art"] is not st.get("art"):
+                    state["art"] = st.get("art")
+                    art.set_bytes(st.get("art"))
+                play.setGlyph("" if st.get("playing") else "")
+                if st.get("duration"):
+                    p = st.get("position", 0) + ((time.time() - st.get("stamp", time.time())) if st.get("playing") else 0)
+                    p = min(p, st["duration"])
+                    prog.set(p / st["duration"])
+                    pos.setText(f"{features.fmt_secs(p)} / {features.fmt_secs(st['duration'])}")
+            else:
+                title.setText("Ничего не играет")
+                artist.setText("Включите музыку в любом плеере")
+                art.set_bytes(None)
+                state["art"] = None
+                play.setGlyph("")
+                pos.setText("")
+                prog.set(0)
+            prev.setEnabled(bool(st.get("active")))
+            nxt.setEnabled(bool(st.get("active")))
+        self.refreshers.append(refresh)
+        return c
+
+    def _card_clock(self):
+        T = self.T
+        c = card()
+        cl = _card_layout(c, 14, 2)
+        tm = label("", "h1")
+        tm.setFont(T.tabular(30))
+        date = label("", "muted")
+        weather = label("", "muted", wrap=True)
+        nxt = label("", "faint", wrap=True)
+        for w in (tm, date, 6, weather, "stretch", nxt):
+            cl.addSpacing(T.s(w)) if isinstance(w, int) else (cl.addStretch(1) if w == "stretch" else cl.addWidget(w))
+
+        def refresh():
+            now = dt.datetime.now()
+            tm.setText(now.strftime("%H:%M"))
+            date.setText(f"{WEEKDAYS[now.weekday()].capitalize()}, {now.day} {MONTHS_GEN[now.month - 1]}")
+            w = self.app.weather.state
+            weather.setText(f"{w['temp']:+d}°  {w['text']}\n{w['city']} · {w['min']:+d}°…{w['max']:+d}°" if w else "")
+            lines = []
+            if self.app.timer.active:
+                lines.append(f"{self.app.timer.label or 'Таймер'}: {self.app.timer.display()}")
+            up = self.app.reminders.upcoming()
+            if up and "reminders" not in self.cards:
+                lines.append(f"{up[0]['text']} — {features.fmt_when(up[0]['at'])}")
+            nxt.setText("\n".join(lines))
+        self.refreshers.append(refresh)
+        return c
+
+    def _card_calendar(self):
+        c = card()
+        cal = MiniCalendar(self.app)
+        _card_layout(c, 14).addWidget(cal)
+        self.refreshers.append(cal.update)
+        return c
+
+    def _card_system(self):
+        c = card()
+        cl = _card_layout(c, 10, 8)
+        cpu = W.Sparkline("Процессор", lambda v: f"{v:.0f}%", height=80, max_value=100)
+        ram = W.Sparkline("Память", lambda v: f"{v:.0f}%", height=80, max_value=100)
+        for s in (cpu, ram):
+            s.setProperty("flat", True)
+            cl.addWidget(s)
+
+        def refresh():
+            cpu.set_values(self.app.monitor.cpu[-30:])
+            ram.set_values(self.app.monitor.ram[-30:])
+        self.refreshers.append(refresh)
+        return c
+
+    def _card_reminders(self):
+        c = card()
+        cl = _card_layout(c, 14, 6)
+        head = ClickableRow("", "Напоминания", lambda: self.app.open_page("reminders"))
+        cl.addWidget(head)
+        rows = [label("", None) for _ in range(3)]
+        subs = [label("", "faint") for _ in range(3)]
+        for r, s in zip(rows, subs):
+            cl.addWidget(vbox(r, s, spacing=0))
+        cl.addStretch(1)
+
+        def refresh():
+            up = self.app.reminders.upcoming()[:3]
+            for i in range(3):
+                if i < len(up):
+                    _elide(rows[i], up[i]["text"], 180)
+                    subs[i].setText(features.fmt_when(up[i]["at"]))
+                else:
+                    rows[i].setText("Пусто — «напомни …» в Alt+Space" if i == 0 and not up else "")
+                    subs[i].setText("")
+        self.refreshers.append(refresh)
+        return c
+
+    def _card_note(self):
+        c = card()
+        cl = _card_layout(c, 14, 6)
+        cl.addWidget(ClickableRow("", "Заметка", lambda: self.app.open_page("notes")))
+        body = label("", "muted", wrap=True)
+        body.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        cl.addWidget(body, 1)
+
+        def refresh():
+            notes = sorted(self.app.store["notes"], key=lambda n: -n.get("t", 0))
+            text = notes[0]["text"].strip() if notes else "Заметок пока нет"
+            body.setText("\n".join(text.splitlines()[:7])[:300])
+        self.refreshers.append(refresh)
+        return c
+
+
+class ClickableRow(QWidget):
+    """Card header: glyph + title + chevron; the whole row opens something."""
+
+    def __init__(self, glyph, title, fn):
+        super().__init__()
+        self.fn = fn
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(W.T.s(8))
+        lay.addWidget(label(glyph, "icon"))
+        lay.addWidget(label(title, "h2"))
+        lay.addStretch(1)
+        lay.addWidget(label("", "icon"))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.fn()
 
 
 # ================================================================ clipboard
@@ -527,7 +632,7 @@ class ShelfPage(Page):
     def _reveal(self):
         sel = self._selected()
         if sel:
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(sel[0])])
+            osapi.reveal(sel[0])
 
     def _copy(self):
         paths = self._selected()
@@ -552,7 +657,7 @@ class ShelfPage(Page):
 
 def _open(path):
     try:
-        os.startfile(path)
+        osapi.open_path(path)
     except OSError:
         pass
 
@@ -831,7 +936,7 @@ class ControlPage(Page):
         T = self.T
         self.wifi = W.Tile("", "Wi-Fi", "…")
         self.bt = W.Tile("", "Bluetooth", "…")
-        self.dark = W.Tile("", "Тёмная тема", "Windows")
+        self.dark = W.Tile("", "Тёмная тема", osapi.NAME)
         self.dnd = W.Tile("", "Не беспокоить", "Island")
         self.awake = W.Tile("", "Не спать", "Экран не гаснет")
         self.hide = W.Tile("", "Автоскрытие", "Пилюли")
@@ -853,9 +958,9 @@ class ControlPage(Page):
         vl.addWidget(label("", "icon"))
         vl.addWidget(label("Громкость", None))
         vl.addStretch(1)
-        vl.addWidget(IconButton("", "Без звука", 30, 13, lambda: winapi.media_key(winapi.VK_VOLUME_MUTE)))
-        vl.addWidget(IconButton("", "Тише", 30, 13, lambda: [winapi.media_key(winapi.VK_VOLUME_DOWN)] * 1))
-        vl.addWidget(IconButton("", "Громче", 30, 13, lambda: winapi.media_key(winapi.VK_VOLUME_UP)))
+        vl.addWidget(IconButton("", "Без звука", 30, 13, lambda: osapi.media("mute")))
+        vl.addWidget(IconButton("", "Тише", 30, 13, lambda: osapi.media("vol_down")))
+        vl.addWidget(IconButton("", "Громче", 30, 13, lambda: osapi.media("vol_up")))
         self.bright = card()
         bl = _card_layout(self.bright, 10, 10, horizontal=True)
         bl.addWidget(label("", "icon"))
@@ -864,8 +969,8 @@ class ControlPage(Page):
         self.slider.sliderReleased.connect(lambda: services.set_brightness(self.slider.value()))
         bl.addWidget(self.slider, 1)
         self.bright.setVisible(False)
-        links = hbox(button("Параметры Windows", "ghost", lambda: os.startfile("ms-settings:")),
-                     button("Диспетчер задач", "ghost", lambda: subprocess.Popen(["taskmgr"])),
+        links = hbox(button(osapi.SETTINGS_LABEL, "ghost", osapi.open_system_settings),
+                     button(osapi.TASKS_LABEL, "ghost", osapi.open_task_manager),
                      button("Блокировка", "ghost", self.app.lock), "stretch", spacing=2)
         bottom = QHBoxLayout()
         bottom.setSpacing(T.s(8))
@@ -883,7 +988,10 @@ class ControlPage(Page):
 
     def on_show(self):
         self.app.radios.refresh()
-        self.dark.setChecked(winapi.windows_dark())
+        self.dark.setChecked(osapi.system_dark())
+        self.dark.setEnabled(osapi.CAN_SET_DARK)
+        if not osapi.CAN_SET_DARK:
+            self.dark.setSub("недоступно")
         self.dnd.setChecked(bool(self.app.settings.get("dnd")))
         self.hide.setChecked(bool(self.app.settings.get("autohide")))
         self.awake.setChecked(self._awake_on)
@@ -906,7 +1014,7 @@ class ControlPage(Page):
 
     def _dark(self, on):
         try:
-            winapi.set_windows_dark(on)
+            osapi.set_system_dark(on)
         except OSError:
             self.dark.setChecked(not on)
         if self.app.settings.get("theme") == "system":
@@ -914,7 +1022,7 @@ class ControlPage(Page):
 
     def _awake(self, on):
         self._awake_on = on
-        winapi.keep_awake(on)
+        osapi.keep_awake(on)
 
 
 # ================================================================ tools
@@ -1192,141 +1300,6 @@ class AIPage(Page):
         self.view.moveCursor(QTextCursor.End)
 
 
-# ================================================================ settings
-
-
-class SettingsPage(Page):
-    key, glyph, title, height = "settings", "", "Настройки", 470
-
-    def build(self):
-        T = self.T
-        s = self.app.settings
-        body = QWidget()
-        form = QVBoxLayout(body)
-        form.setContentsMargins(0, 0, T.s(8), 0)
-        form.setSpacing(T.s(10))
-
-        def row(title, sub, widget):
-            r = hbox(vbox(label(title), label(sub, "faint") if sub else None, spacing=0), "stretch", widget,
-                     spacing=10)
-            form.addWidget(r)
-
-        themes = hbox(spacing=4)
-        for key, name in (("dark", "Тёмная"), ("light", "Светлая"), ("system", "Как в Windows")):
-            b = button(name, "chip", lambda _=False, k=key: self.app.set_setting("theme", k, rebuild=True))
-            b.setCheckable(True)
-            b.setChecked(s.get("theme") == key)
-            themes.layout().addWidget(b)
-        row("Тема", "Монохром: чёрная или белая пилюля", themes)
-
-        self.scale = QSlider(Qt.Horizontal)
-        self.scale.setRange(8, 20)
-        self.scale.setValue(int(s.get("scale", 100)) // 10)
-        self.scale.setFixedWidth(T.s(200))
-        self.scale_val = label(f"{s.get('scale', 100)}%", "muted")
-        self.scale_val.setFixedWidth(T.s(44))
-        self.scale.valueChanged.connect(lambda v: self.scale_val.setText(f"{v * 10}%"))
-        self.scale.sliderReleased.connect(lambda: self.app.set_setting("scale", self.scale.value() * 10, rebuild=True))
-        row("Масштаб", "80–200 %", hbox(self.scale, self.scale_val, spacing=8))
-
-        def toggle(path, title, sub, apply=None):
-            t = W.Toggle(bool(s.get(path)))
-            t.toggled.connect(lambda on: (apply or (lambda v: self.app.set_setting(path, v)))(on))
-            row(title, sub, t)
-
-        toggle("expand_on_hover", "Раскрывать при наведении", "Иначе — по клику")
-        toggle("autohide", "Автоскрытие", "В покое пилюля прячется в тонкую полоску")
-        toggle("hide_fullscreen", "Прятать в полноэкранных приложениях", "Игры, видео, презентации")
-        at = W.Toggle(winapi.autostart_enabled())
-        at.toggled.connect(self.app.set_autostart)
-        row("Запускать с Windows", "", at)
-
-        screens = QComboBox()
-        for i, scr in enumerate(self.app.qapp.screens()):
-            screens.addItem(f"{i + 1}: {scr.name()} {scr.size().width()}×{scr.size().height()}")
-        screens.setCurrentIndex(min(int(s.get("screen", 0)), screens.count() - 1))
-        screens.currentIndexChanged.connect(lambda i: self.app.set_setting("screen", i, rebuild=True))
-        row("Экран", "", screens)
-
-        form.addWidget(W.sep())
-        form.addWidget(label("Живые события", "h2"))
-        chips = hbox(spacing=4)
-        for key, name in (("music", "Музыка"), ("timer", "Таймер"), ("layout", "Раскладка"), ("caps", "Caps Lock"),
-                          ("privacy", "Микрофон/камера"), ("downloads", "Загрузки"), ("claude", "Claude Code")):
-            b = button(name, "chip")
-            b.setCheckable(True)
-            b.setChecked(bool(s.get(f"live.{key}", True)))
-            b.toggled.connect(lambda on, k=key: self.app.set_setting(f"live.{k}", on))
-            chips.layout().addWidget(b)
-        chips.layout().addStretch(1)
-        form.addWidget(chips)
-
-        form.addWidget(W.sep())
-        form.addWidget(label("ИИ (Claude)", "h2"))
-        self.key = QLineEdit()
-        self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText("sk-ant-…  (хранится зашифрованным DPAPI)" if not self.app.ai.api_key()
-                                    else "ключ сохранён — введите новый, чтобы заменить")
-        self.key.setFixedWidth(T.s(300))
-        self.key.returnPressed.connect(self._save_key)
-        row("Ключ Anthropic API", "или переменная ANTHROPIC_API_KEY",
-            hbox(self.key, button("Сохранить", None, self._save_key), spacing=6))
-        model = QLineEdit(s.get("ai.model", "claude-sonnet-5-5"))
-        model.setFixedWidth(T.s(220))
-        model.editingFinished.connect(lambda: self.app.set_setting("ai.model", model.text().strip() or "claude-sonnet-5-5"))
-        row("Модель", "", model)
-        lang = QLineEdit(s.get("ai.translate_to", "ru"))
-        lang.setFixedWidth(T.s(80))
-        lang.editingFinished.connect(lambda: self.app.set_setting("ai.translate_to", lang.text().strip() or "ru"))
-        row("Язык перевода", "код языка, напр. ru, en, de", lang)
-
-        form.addWidget(W.sep())
-        form.addWidget(label("Прочее", "h2"))
-        city = QLineEdit(s.get("weather.city", ""))
-        city.setPlaceholderText("авто по IP")
-        city.setFixedWidth(T.s(200))
-        city.editingFinished.connect(lambda: (self.app.set_setting("weather.city", city.text().strip()),
-                                              self.app.weather.refresh()))
-        row("Город для погоды", "Open-Meteo, без ключа", city)
-        row("Claude Code hooks", f"POST http://127.0.0.1:{s.get('hooks.port')}/claude",
-            button("Скопировать конфиг", None, self._copy_hooks))
-        hk = s.get("hotkeys", {})
-        names = {"command": "Командная строка", "toggle": "Показать/раскрыть", "clipboard": "Буфер",
-                 "screenshot": "Скриншот", "picker": "Пипетка", "qr": "QR", "ocr": "OCR", "notes": "Заметки",
-                 "timer": "Таймер", "ai": "Claude"}
-        txt = "   ".join(f"{names.get(k, k)}: {v.title()}" for k, v in hk.items())
-        hkl = label(txt, "muted", wrap=True)
-        form.addWidget(label("Горячие клавиши", None))
-        form.addWidget(hkl)
-        form.addWidget(hbox(button("Открыть settings.json", None, lambda: os.startfile(config.SETTINGS_PATH)),
-                            button("Папка данных", "ghost", lambda: os.startfile(config.DATA_DIR)),
-                            "stretch", label(f"Island {config.APP_VERSION}", "faint"), spacing=6))
-        form.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(body)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(scroll)
-
-    def _save_key(self):
-        key = self.key.text().strip()
-        if not key:
-            return
-        self.app.settings.set("ai.api_key", config.protect(key) or key)
-        self.key.clear()
-        self.key.setPlaceholderText("ключ сохранён — введите новый, чтобы заменить")
-        self.app.alert("", "Ключ сохранён")
-
-    def _copy_hooks(self):
-        port = self.app.settings.get("hooks.port")
-        cmd = f"curl -s -m 2 -X POST http://127.0.0.1:{port}/claude --data-binary @-"
-        hook = [{"hooks": [{"type": "command", "command": cmd}]}]
-        import json
-        cfg = {"hooks": {e: hook for e in ("UserPromptSubmit", "PreToolUse", "Notification", "Stop", "SessionEnd")}}
-        self.app.copy_text(json.dumps(cfg, indent=2))
-
-
 # ================================================================ command bar
 
 
@@ -1424,5 +1397,5 @@ class CommandPage(Page):
         self.input.clear()
 
 
-PAGES = [HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage, ControlPage, ToolsPage,
-         SystemPage, AIPage, SettingsPage]
+PAGES = {cls.key: cls for cls in (HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage,
+                                  ControlPage, ToolsPage, SystemPage, AIPage)}

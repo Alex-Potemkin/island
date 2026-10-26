@@ -8,7 +8,7 @@ import re
 import urllib.parse
 import webbrowser
 
-from . import features
+from . import features, osapi
 
 # ---------------------------------------------------------------- durations
 
@@ -315,7 +315,7 @@ def build_results(app, query):
     if not re.match(r"^(?:таймер|timer|напомни|remind|tr|\?|ai)\b", low):
         for path in app.index.search_files(q, 5):
             out.append(R("" if os.path.isdir(path) else "", os.path.basename(path),
-                         path, lambda p=path: os.startfile(p)))
+                         path, lambda p=path: osapi.open_path(p)))
 
     m = re.match(r"^(?:g|google|гугл|поиск|yt|youtube)\s+(.+)$", q, flags=re.I)
     term = m.group(1) if m else q

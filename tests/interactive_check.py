@@ -22,7 +22,7 @@ os.environ.setdefault("ISLAND_HOME", os.path.join(tempfile.gettempdir(), "island
 from PySide6.QtCore import QPoint, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from island_app import winapi  # noqa: E402
+from island_app.osapi import windows as winapi  # noqa: E402
 from island_app.app import App  # noqa: E402
 
 user32 = ctypes.windll.user32
@@ -63,6 +63,7 @@ def main():
     qapp.setQuitOnLastWindowClosed(False)
     app = App(qapp, [])
     app.hard_exit = False
+    app.settings.set("onboarded", True)
     isl = app.island
     out = os.path.join(tempfile.gettempdir(), "island_target.txt")
     script = os.path.join(tempfile.gettempdir(), "island_target.py")

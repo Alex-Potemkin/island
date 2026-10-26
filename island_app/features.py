@@ -10,7 +10,7 @@ import uuid
 from PySide6.QtCore import QMimeData, QObject, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImage
 
-from . import bridge, config
+from . import bridge, config, osapi
 
 # ---------------------------------------------------------------- timer
 
@@ -346,35 +346,13 @@ class Index(QObject):
         bridge.run_thread(self._build, lambda _r: self.ready.emit())
 
     def _build(self):
-        apps = {}
-        roots = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), r"Microsoft\Windows\Start Menu\Programs"),
-                 os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")]
-        for root in roots:
-            for dirpath, _dirs, files in os.walk(root):
-                for f in files:
-                    name, ext = os.path.splitext(f)
-                    if ext.lower() in (".lnk", ".url", ".appref-ms") and "uninstall" not in name.lower() \
-                            and "удал" not in name.lower():
-                        apps.setdefault(name.lower(), (name, os.path.join(dirpath, f), "lnk"))
-        try:  # Store / UWP apps (Settings, Calculator, ...)
-            out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                  "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
-                                  "Get-StartApps | ForEach-Object { $_.Name + \"`t\" + $_.AppID }"],
-                                 capture_output=True, timeout=20, creationflags=0x08000000)
-            for line in out.stdout.decode("utf-8", "replace").splitlines():
-                if "\t" in line:
-                    name, appid = line.rsplit("\t", 1)
-                    name = name.strip()
-                    if name and name.lower() not in apps and "uninstall" not in name.lower():
-                        apps[name.lower()] = (name, appid.strip(), "appid")
-        except (OSError, subprocess.SubprocessError):
-            pass
+        apps = _windows_apps() if osapi.IS_WINDOWS else _linux_apps()
         files = []
         home = os.path.expanduser("~")
-        for sub in ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos",
-                    os.path.join("OneDrive", "Desktop"), os.path.join("OneDrive", "Documents")):
-            base = os.path.join(home, sub)
-            if not os.path.isdir(base):
+        bases = [osapi.user_dir(k) for k in ("desktop", "documents", "download", "pictures", "music", "videos")]
+        bases += [os.path.join(home, "OneDrive", "Desktop"), os.path.join(home, "OneDrive", "Documents")]
+        for base in dict.fromkeys(bases):
+            if not os.path.isdir(base) or os.path.normpath(base) == os.path.normpath(home):
                 continue
             base_depth = base.count(os.sep)
             for dirpath, dirs, fnames in os.walk(base):
@@ -419,6 +397,75 @@ class Index(QObject):
         return [p for *_x, p in out[:limit]]
 
 
+def _windows_apps():
+    apps = {}
+    roots = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), r"Microsoft\Windows\Start Menu\Programs"),
+             os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")]
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                name, ext = os.path.splitext(f)
+                if ext.lower() in (".lnk", ".url", ".appref-ms") and "uninstall" not in name.lower() \
+                        and "удал" not in name.lower():
+                    apps.setdefault(name.lower(), (name, os.path.join(dirpath, f), "lnk"))
+    try:  # Store / UWP apps (Settings, Calculator, ...)
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                              "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+                              "Get-StartApps | ForEach-Object { $_.Name + \"`t\" + $_.AppID }"],
+                             capture_output=True, timeout=20, creationflags=0x08000000)
+        for line in out.stdout.decode("utf-8", "replace").splitlines():
+            if "\t" in line:
+                name, appid = line.rsplit("\t", 1)
+                name = name.strip()
+                if name and name.lower() not in apps and "uninstall" not in name.lower():
+                    apps[name.lower()] = (name, appid.strip(), "appid")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return apps
+
+
+def _linux_apps():
+    """Visible .desktop entries from the XDG data dirs (system, user, Flatpak, Snap)."""
+    import locale
+    lang = (locale.getlocale()[0] or os.environ.get("LANG", "")).split("_")[0]
+    dirs = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")]
+    dirs += (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+    dirs += ["/var/lib/flatpak/exports/share", os.path.expanduser("~/.local/share/flatpak/exports/share"),
+             "/var/lib/snapd/desktop"]
+    apps = {}
+    for d in dirs:
+        appdir = os.path.join(d, "applications")
+        if not os.path.isdir(appdir):
+            continue
+        for dirpath, _dirs, files in os.walk(appdir):
+            for f in files:
+                if f.endswith(".desktop"):
+                    entry = _parse_desktop(os.path.join(dirpath, f), lang)
+                    if entry:
+                        apps.setdefault(entry[0].lower(), entry)
+    return apps
+
+
+def _parse_desktop(path, lang):
+    fields = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            section = None
+            for line in f:
+                line = line.strip()
+                if line.startswith("["):
+                    section = line
+                elif section == "[Desktop Entry]" and "=" in line:
+                    k, v = line.split("=", 1)
+                    fields.setdefault(k.strip(), v.strip())
+    except OSError:
+        return None
+    if fields.get("Type") != "Application" or fields.get("NoDisplay") == "true" or fields.get("Hidden") == "true":
+        return None
+    name = fields.get(f"Name[{lang}]") or fields.get("Name")
+    return (name, path, "desktop") if name and fields.get("Exec") else None
+
+
 # Russian names for apps that are English on an English Windows (and the other way round)
 ALIASES = {"блокнот": "notepad", "калькулятор": "calculator", "проводник": "file explorer",
            "параметры": "settings", "настройки windows": "settings", "терминал": "terminal",
@@ -447,8 +494,22 @@ def fuzzy(q, name):
 def launch_app(target, kind):
     if kind == "appid":
         subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + target], creationflags=0x08000000)
+    elif kind == "desktop":
+        name = os.path.splitext(os.path.basename(target))[0]
+        if not (osapi.have("gtk-launch") and osapi.spawn(["gtk-launch", name])):
+            fields = {}
+            with open(target, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "=" in line and not line.startswith("["):
+                        k, v = line.strip().split("=", 1)
+                        fields.setdefault(k, v)
+            import re
+            import shlex
+            cmd = re.sub(r"%[a-zA-Z]", "", fields.get("Exec", "")).strip()
+            if cmd:
+                osapi.spawn(shlex.split(cmd))
     else:
-        os.startfile(target)
+        osapi.open_path(target)
 
 
 # ---------------------------------------------------------------- Claude chat (Anthropic SDK)
