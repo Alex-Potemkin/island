@@ -19,6 +19,7 @@ os.makedirs(BUILD, exist_ok=True)
 
 def make_icons():
     """Window/tray icon in the sizes each OS wants; returns the path for --icon (Windows) or None."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no display needed (CI)
     from PySide6.QtWidgets import QApplication
     sys.path.insert(0, HERE)
     from island_app.app import make_icon

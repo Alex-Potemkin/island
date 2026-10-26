@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONIOENCODING: utf-8     # test output is in Russian; Windows runners default to cp1252
+
 jobs:
   linux:
     # oldest supported runner = widest glibc compatibility for the binary
