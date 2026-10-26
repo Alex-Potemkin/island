@@ -288,7 +288,8 @@ class _Form(QWidget):
 
 class SettingsPage(Page):
     key, glyph, title, height = "settings", "", "Настройки", 480
-    SECTIONS = [("main", "Основное"), ("look", "Вид"), ("builder", "Конструктор"), ("more", "Дополнительно")]
+    SECTIONS = [("main", "Основное"), ("look", "Вид"), ("builder", "Конструктор"), ("notify", "Уведомления"),
+                ("accounts", "Аккаунты"), ("more", "Дополнительно")]
 
     def build(self):
         T = self.T
@@ -470,6 +471,196 @@ class SettingsPage(Page):
         f.add(hbox("stretch", button("Вернуть как было", "ghost", lambda: self.app.apply_preset("full"))))
         return f
 
+    # ------------------------------------------------------------ Уведомления
+
+    def _notify(self):
+        from .notifications import DEFAULTS, SOURCES, STYLES
+        s = self.app.settings
+        cfg = dict(DEFAULTS)
+        cfg.update(s.get("notifications") or {})
+        f = _Form()
+
+        def put(key, value):
+            c = dict(DEFAULTS)
+            c.update(s.get("notifications") or {})
+            c[key] = value
+            s.set("notifications", c)
+
+        f.title("Как показывать", "Карточка — пилюля вырастает в уведомление с текстом; «В пилюле» — одной строкой.")
+        f.row("Стиль по умолчанию", "", chip_group(list(STYLES.items()), cfg["style"], lambda k: put("style", k)))
+        f.row("Сколько держать", "", slider(2, 15, int(cfg["duration"]), lambda v: f"{v} с",
+                                            lambda v: put("duration", v)))
+        snd = W.Toggle(bool(cfg["sound"]))
+        snd.toggled.connect(lambda on: put("sound", on))
+        f.row("Звук", "", snd)
+        f.add(hbox(button("Показать пример", None, self._sample), "stretch"))
+
+        f.title("Источники", "Для каждого — свой стиль или выключить.")
+        sources = dict(cfg.get("sources") or {})
+
+        def put_source(src, style):
+            sources[src] = style
+            put("sources", dict(sources))
+        opts = [("default", "Как обычно")] + list(STYLES.items())
+        for key, (glyph, title) in SOURCES.items():
+            f.row(title, "", chip_group(opts, sources.get(key, "default"), lambda k, src=key: put_source(src, k)))
+
+        f.title("Календарь")
+        f.row("Напоминать о событии", "", chip_group([("0", "в момент начала"), ("5", "за 5 мин"), ("10", "за 10"),
+                                                      ("15", "за 15"), ("30", "за 30")],
+                                                     str(cfg.get("event_lead", 10)), lambda k: put("event_lead", int(k))))
+
+        f.title("Тихие часы", "В это время уведомления только копятся в истории (напоминания и таймер — всегда).")
+        quiet = dict(cfg.get("quiet") or {})
+
+        def put_quiet(k, v):
+            quiet[k] = v
+            put("quiet", dict(quiet))
+        qt = W.Toggle(bool(quiet.get("enabled")))
+        qt.toggled.connect(lambda on: put_quiet("enabled", on))
+        hours = [f"{h:02d}:00" for h in range(24)]
+        a, b = QComboBox(), QComboBox()
+        for box, key, default in ((a, "from", 22), (b, "to", 8)):
+            box.addItems(hours)
+            box.setCurrentIndex(int(quiet.get(key, default)))
+            box.currentIndexChanged.connect(lambda i, k=key: put_quiet(k, i))
+        f.row("Включить", "", qt)
+        f.row("С … до …", "", hbox(a, label("—", "muted"), b, spacing=6))
+        return f
+
+    def _sample(self):
+        self.app.notifications.push("calendar", "Созвон по дизайну", "через 10 мин · 15:00 · Zoom")
+
+    # ------------------------------------------------------------ Аккаунты
+
+    def _accounts(self):
+        s = self.app.settings
+        cal, gh = self.app.calendar, self.app.github
+        f = _Form()
+
+        # Google
+        g = cal.google
+        f.title("Google Календарь", "Вход через браузер (OAuth). Нужен свой Client ID — это бесплатно, 5 минут.")
+        self.g_status = label("", "muted")
+        f.add(self.g_status)
+        cid = QLineEdit(g.client_id)
+        cid.setPlaceholderText("xxxx.apps.googleusercontent.com")
+        cid.setFixedWidth(W.T.s(330))
+        cid.editingFinished.connect(lambda: s.set("accounts.google.client_id", cid.text().strip()))
+        f.row("Client ID", "", cid)
+        sec = QLineEdit()
+        sec.setEchoMode(QLineEdit.Password)
+        sec.setPlaceholderText("сохранён" if g.client_secret else "GOCSPX-…")
+        sec.setFixedWidth(W.T.s(330))
+        sec.editingFinished.connect(lambda: sec.text().strip() and (
+            s.set("accounts.google.client_secret", config.protect(sec.text().strip()) or sec.text().strip()),
+            sec.clear(), sec.setPlaceholderText("сохранён")))
+        f.row("Client secret", "", sec)
+        self.g_connect = button("Войти через Google", "primary", lambda: (
+            s.set("accounts.google.client_id", cid.text().strip()), g.connect()))
+        self.g_off = button("Отключить", "ghost", lambda: (g.disconnect(), cal.refresh(), self._accounts_status()))
+        f.add(hbox(self.g_connect, self.g_off, "stretch",
+                   button("Как получить Client ID", "ghost", lambda: self._help_google()), spacing=6))
+        self.listen(g.connected, lambda _e: self._accounts_status())
+        self.listen(g.failed, lambda msg: self.g_status.setText("Не удалось: " + msg))
+
+        # iCal
+        f.title("Календари по ссылке (iCal)",
+                "Google («Секретный адрес в формате iCal»), Outlook («Опубликовать календарь» → ICS), "
+                "Яндекс («Экспорт» → ссылка), Apple iCloud (публичный календарь) и любые другие .ics.")
+        self.ics_box = QVBoxLayout()
+        self.ics_box.setContentsMargins(0, 0, 0, 0)
+        self.ics_box.setSpacing(W.T.s(4))
+        ib = QWidget()
+        ib.setLayout(self.ics_box)
+        f.add(ib)
+        name, url = QLineEdit(), QLineEdit()
+        name.setPlaceholderText("Название")
+        name.setFixedWidth(W.T.s(140))
+        url.setPlaceholderText("https://… .ics  или  webcal://…")
+
+        def add():
+            u = url.text().strip()
+            if u.startswith(("http://", "https://", "webcal://")):
+                lst = list(s.get("accounts.ics") or [])
+                lst.append({"name": name.text().strip() or "Календарь", "url": u})
+                s.set("accounts.ics", lst)
+                name.clear()
+                url.clear()
+                self._render_ics()
+                cal.refresh()
+        url.returnPressed.connect(add)
+        f.add(hbox(name, url, button("Добавить", None, add), spacing=6))
+
+        # GitHub
+        f.title("GitHub", "Уведомления о PR, issues и CI. Нужен personal access token (classic) с правом notifications.")
+        self.gh_status = label("", "muted")
+        f.add(self.gh_status)
+        tok = QLineEdit()
+        tok.setEchoMode(QLineEdit.Password)
+        tok.setPlaceholderText("ghp_…")
+        tok.setFixedWidth(W.T.s(330))
+        f.row("Токен", "", hbox(tok, button("Сохранить", None, lambda: (gh.set_token(tok.text().strip()),
+                                                                         tok.clear())),
+                                 button("Отключить", "ghost", lambda: gh.set_token("")), spacing=6))
+        f.add(hbox(button("Создать токен на github.com", "ghost", lambda: _open_url(
+            "https://github.com/settings/tokens/new?scopes=notifications&description=Island")), "stretch"))
+        self.listen(gh.changed, self._accounts_status)
+
+        f.title("Другие сервисы", "Любой сервис, умеющий вебхуки (IFTTT, Zapier, Home Assistant, n8n, скрипты), "
+                f"может прислать уведомление: POST http://127.0.0.1:{s.get('hooks.port')}/notify "
+                "с JSON {\"title\": …, \"text\": …}.")
+        self.listen(cal.changed, self._accounts_status)
+        self._render_ics()
+        self._accounts_status()
+        return f
+
+    def _render_ics(self):
+        while self.ics_box.count():
+            w = self.ics_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        s = self.app.settings
+        lst = list(s.get("accounts.ics") or [])
+        if not lst:
+            self.ics_box.addWidget(label("Пока ни одного", "faint"))
+        for i, c in enumerate(lst):
+            u = c.get("url", "")
+            shown = u if len(u) < 60 else u[:36] + "…" + u[-18:]
+
+            def rm(_=False, i=i):
+                cur = list(s.get("accounts.ics") or [])
+                if i < len(cur):
+                    cur.pop(i)
+                s.set("accounts.ics", cur)
+                self._render_ics()
+                self.app.calendar.refresh()
+            self.ics_box.addWidget(hbox(label("", "icon"), label(c.get("name", "")), label(shown, "faint"),
+                                        "stretch", IconButton("", "Удалить", 26, 10, rm), spacing=8))
+
+    def _accounts_status(self):
+        g = self.app.calendar.google
+        if g.is_connected():
+            self.g_status.setText(f"Подключён: {g.email or 'аккаунт Google'}")
+        elif g.busy:
+            self.g_status.setText("Ждём вход в браузере…")
+        else:
+            self.g_status.setText("Не подключён")
+        self.g_off.setVisible(g.is_connected())
+        gh = self.app.github
+        if gh.error:
+            self.gh_status.setText("Ошибка: " + gh.error)
+        elif gh.token:
+            self.gh_status.setText(f"Подключён{(': ' + gh.login) if gh.login else ''} · непрочитанных: {len(gh.unread)}")
+        else:
+            self.gh_status.setText("Не подключён")
+
+    def _help_google(self):
+        _open_url("https://console.cloud.google.com/apis/credentials")
+        self.app.notifications.push(
+            "calendar", "Client ID для Google",
+            "Включите Google Calendar API → Credentials → OAuth client ID → Desktop app", glyph="")
+
     # ------------------------------------------------------------ Дополнительно
 
     def _more(self):
@@ -543,6 +734,11 @@ class SettingsPage(Page):
         hook = [{"hooks": [{"type": "command", "command": cmd}]}]
         cfg = {"hooks": {e: hook for e in ("UserPromptSubmit", "PreToolUse", "Notification", "Stop", "SessionEnd")}}
         self.app.copy_text(json.dumps(cfg, indent=2))
+
+
+def _open_url(url):
+    import webbrowser
+    webbrowser.open(url)
 
 
 class WelcomePage(Page):

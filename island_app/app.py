@@ -9,7 +9,8 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import bridge, capture, config, features, layout, osapi, services
+from . import bridge, capture, config, features, integrations, layout, osapi, services
+from .notifications import Notifications
 from . import widgets as W
 from .island import Island, is_input
 from .theme import Theme
@@ -63,6 +64,9 @@ class App(QObject):
         self.clipboard = features.ClipboardHistory(self.settings, self.store)
         self.index = features.Index()
         self.ai = features.AIChat(self.settings)
+        self.notifications = Notifications(self)
+        self.calendar = integrations.CalendarService(self.settings, self.notifications.push)
+        self.github = integrations.GitHubService(self.settings, self.notifications.push)
         self.hooks = services.HookServer(int(self.settings.get("hooks.port", 47811))) \
             if self.settings.get("hooks.enabled", True) else None
         self._alert_timer = QTimer(self, singleShot=True, timeout=self.clear_alert)
@@ -162,7 +166,7 @@ class App(QObject):
         self.sys.download_finished.connect(self._download_done)
         if self.hooks:
             self.hooks.claude.connect(self._claude)
-            self.hooks.notify.connect(lambda t, x: self.alert("", t or "Уведомление", x, ttl=6))
+            self.hooks.notify.connect(lambda t, x: self.notifications.push("scripts", t or "Уведомление", x))
 
     def _settings_file_changed(self, path):
         if path not in self.watcher.files():
@@ -246,9 +250,8 @@ class App(QObject):
             self._set_activity("download", None)
 
     def _download_done(self, path):
-        if self.settings.get("live.downloads", True):
-            self.alert("", "Загружено", os.path.basename(path), ttl=5,
-                       action=lambda: osapi.open_path(path) if os.path.exists(path) else None)
+        self.notifications.push("downloads", "Загружено", os.path.basename(path),
+                                action=lambda: osapi.open_path(path) if os.path.exists(path) else None)
 
     def _claude(self, data):
         if not self.settings.get("live.claude", True):
@@ -266,8 +269,7 @@ class App(QObject):
             self.activities.pop("claude", None)
             self._set_activity("claude_wait", {"kind": "claude", "glyph": "", "title": proj, "sub": msg,
                                                "busy": False, "state_glyph": ""})
-            if not self.settings.get("dnd"):
-                osapi.beep()
+            self.notifications.push("claude", proj, msg)
         elif ev == "Stop":
             self.activities.pop("claude_wait", None)
             self._set_activity("claude", {"kind": "claude", "glyph": "", "title": proj, "sub": "готово",
@@ -278,16 +280,14 @@ class App(QObject):
             self._set_activity("claude", None)
 
     def _timer_finished(self, label):
-        osapi.beep()
-        self.alert("", label, "Таймер", ttl=8, important=True, action=lambda: self.island.expand("timer"))
-        if self.timer.mode != "pomodoro":
-            self.tray.showMessage("Island", label, make_icon(64), 5000)
+        self.notifications.push("timer", label, "Время вышло" if self.timer.mode != "pomodoro" else "Pomodoro",
+                                action=lambda: self.island.expand("timer"))
 
     def _reminder_fired(self, r):
-        osapi.beep()
-        self.alert("", r["text"], "Напоминание", ttl=15, important=True,
-                   action=lambda: self.island.expand("reminders"))
-        self.tray.showMessage("Напоминание", r["text"], make_icon(64), 10000)
+        self.notifications.push("reminders", r["text"], "Напоминание",
+                                action=lambda: self.island.expand("reminders"))
+        if not self.island.isVisible():
+            self.tray.showMessage("Напоминание", r["text"], make_icon(64), 10000)
 
     # ------------------------------------------------------------ actions (used by pages and the command bar)
 
@@ -299,6 +299,7 @@ class App(QObject):
                    "timer": lambda: self.island.expand("timer"),
                    "ai": lambda: self.island.expand("ai", focus=True),
                    "show": lambda: self.island.expand(), "settings": lambda: self.island.expand("settings"),
+                   "calendar": lambda: self.island.expand("calendar"), "inbox": lambda: self.island.expand("inbox"),
                    "quit": self.quit}
         fn = actions.get(name)
         if fn:
@@ -310,6 +311,15 @@ class App(QObject):
          "timer5": lambda: self.start_timer(300, "Таймер"), "pomodoro": self.timer.start_pomodoro,
          "note": lambda: self.open_page("notes", new_note=True), "command": self.open_command,
          "lock": self.lock}[key]()
+
+    def open_settings(self, section):
+        """Open the settings page on a section: main, look, builder, notify, accounts, more."""
+        from .settings_ui import SettingsPage
+        keys = [k for k, _t in SettingsPage.SECTIONS]
+        self.ui_state["settings_section"] = keys.index(section) if section in keys else 0
+        self.ui_state["settings_scroll"] = 0
+        self.island.expand("settings")
+        self.island.panel.page("settings")._section(self.ui_state["settings_section"])
 
     def _welcome(self):
         if not self.settings.get("onboarded"):

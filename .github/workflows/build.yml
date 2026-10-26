@@ -37,12 +37,18 @@ jobs:
         timeout-minutes: 5
         run: xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_tools.py
 
+      - name: Layout, appearance, accounts and notifications
+        timeout-minutes: 5
+        run: |
+          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_layout.py
+          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_integrations.py
+
       - name: Demo run with screenshots (from source)
         timeout-minutes: 6
         run: |
           export ISLAND_HOME=$(mktemp -d)
           xvfb-run -a -s "-screen 0 1920x1080x24" python main.py --demo --exit --out ci-shots/source
-          test "$(ls ci-shots/source | wc -l)" -ge 30
+          test "$(ls ci-shots/source | wc -l)" -ge 40
 
       - name: Build the binary
         run: python build_exe.py
@@ -52,7 +58,7 @@ jobs:
         run: |
           export ISLAND_HOME=$(mktemp -d)
           xvfb-run -a -s "-screen 0 1920x1080x24" ./Island-linux-x86_64 --demo --exit --out ci-shots/binary
-          test "$(ls ci-shots/binary | wc -l)" -ge 30
+          test "$(ls ci-shots/binary | wc -l)" -ge 40
           test -f "$ISLAND_HOME/data.json"
 
       - uses: actions/upload-artifact@v4
@@ -79,6 +85,10 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Tool checks
         run: python tests/check_tools.py
+      - name: Layout, accounts and notifications
+        run: |
+          python tests/check_layout.py
+          python tests/check_integrations.py
       - name: Build
         run: python build_exe.py
       - uses: actions/upload-artifact@v4

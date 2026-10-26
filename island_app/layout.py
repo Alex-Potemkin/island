@@ -18,6 +18,8 @@ TABS = {  # key: (glyph, title, description)
     "tools": ("", "Инструменты", "Скриншот, пипетка, QR, текст с экрана"),
     "system": ("", "Система", "Процессор, память, сеть"),
     "ai": ("", "Claude", "Чат и перевод"),
+    "calendar": ("", "Календарь", "События из Google и iCal-календарей"),
+    "inbox": ("", "Уведомления", "История всплывающих уведомлений"),
 }
 
 CARDS = {
@@ -27,6 +29,7 @@ CARDS = {
     "system": ("", "Система", "Графики процессора и памяти"),
     "reminders": ("", "Напоминания", "Три ближайших"),
     "note": ("", "Заметка", "Последняя заметка"),
+    "agenda": ("", "События", "Ближайшие встречи из календарей"),
 }
 
 QUICK = {  # key: (glyph, title)
@@ -52,13 +55,14 @@ PRESETS = {
     },
     "standard": {
         "title": "Стандарт", "text": "Повседневный набор без системных графиков и ИИ",
-        "layout": {"tabs": ["home", "clipboard", "shelf", "notes", "timer", "reminders", "control", "tools"],
-                   "home": ["music", "clock", "calendar"],
+        "layout": {"tabs": ["home", "clipboard", "shelf", "notes", "timer", "reminders", "calendar", "control",
+                            "tools", "inbox"],
+                   "home": ["music", "clock", "agenda"],
                    "quick": ["screenshot", "picker", "qr", "ocr", "timer5", "note", "command"], "idle": "empty"},
     },
     "full": {
         "title": "Всё", "text": "Все вкладки и карточки, часы в пилюле",
-        "layout": {"tabs": list(TABS), "home": ["music", "clock", "calendar", "system", "reminders", "note"],
+        "layout": {"tabs": list(TABS), "home": ["music", "clock", "calendar", "agenda", "reminders", "note"],
                    "quick": ["screenshot", "fullshot", "picker", "qr", "ocr", "timer5", "pomodoro", "note",
                              "command"], "idle": "clock"},
     },

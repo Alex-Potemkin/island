@@ -3,6 +3,7 @@ and hosts the panel. All shape changes run through a small spring simulation."""
 import math
 import os
 import time
+from collections import deque
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QRegion
@@ -139,6 +140,8 @@ class Island(QWidget):
         self._last_live = None
         self._art_cache = (None, None)
         self._fg_tick = 0
+        self.toast = None               # notification card currently shown in the pill
+        self._toasts = deque()
         T = self.T
         self.pad = T.s(34)
         self.max_w = T.s(760)
@@ -156,6 +159,7 @@ class Island(QWidget):
         self._poll.start()
         self._clock = QTimer(self, interval=5000, timeout=self._clock_tick)
         self._clock.start()
+        self._toast_timer = QTimer(self, singleShot=True, timeout=self._next_toast)
         self.place()
         self.retarget(snap=True)
 
@@ -205,6 +209,9 @@ class Island(QWidget):
         elif self.mode == "live" and live:
             w, h = self.live_width(live), P.s(36)
             r, y, o = h / 2, self._top(), 0.0
+        elif self.mode == "toast" and self.toast:
+            w, h = self.toast_size()
+            r, y, o = min(h / 2, P.r(26)), self._top(), 0.0
         elif self.mode == "hidden":
             w, h, r, y, o = P.s(120), T.s(5), T.s(2.5), 0.0, 0.0
         else:
@@ -296,6 +303,8 @@ class Island(QWidget):
         p.drawRoundedRect(r, rad, rad)
         if self.mode in ("live", "idle") and r.height() > T.s(20):
             self.paint_live(p, r)
+        elif self.mode == "toast" and self.toast:
+            self.paint_toast(p, r)
 
     def _clock_tick(self):
         if self.mode == "idle" and self.idle_text():
@@ -511,7 +520,80 @@ class Island(QWidget):
 
     # ------------------------------------------------------------ state changes
 
+    # ------------------------------------------------------------ notification cards
+
+    def show_toast(self, n):
+        self._toasts.append(n)
+        if self.toast is None and self.mode != "expanded":
+            self._next_toast()
+
+    def _next_toast(self):
+        self.toast = self._toasts.popleft() if self._toasts else None
+        if self.mode == "expanded":
+            return
+        self.mode = self.resting_mode()
+        self._last_live = None
+        self.retarget()
+        if self.toast:
+            self._toast_timer.start(int(float(self.app.notifications.cfg["duration"]) * 1000))
+
+    def dismiss_toast(self):
+        self._toast_timer.stop()
+        self._next_toast()
+
+    def toast_size(self):
+        P = self.P
+        n = self.toast
+        fm = QFontMetrics(P.font(13, 600))
+        fm2 = QFontMetrics(P.font(12))
+        text = max(fm.horizontalAdvance(n.get("title", "")), fm2.horizontalAdvance(n.get("body", "")))
+        w = max(P.s(300), min(P.s(470), text + P.s(100)))
+        return w, P.s(76 if n.get("body") else 58)
+
+    def paint_toast(self, p, r):
+        P = self.P
+        n = self.toast
+        alpha = self._content_alpha(r)
+        if alpha <= 0.02:
+            return
+        p.save()
+        p.setOpacity(alpha)
+        clip = QPainterPath()
+        clip.addRoundedRect(r, self.springs["r"].v, self.springs["r"].v)
+        p.setClipPath(clip)
+        pad = P.s(14)
+        d = P.s(38)
+        icon = QRectF(r.left() + pad, r.center().y() - d / 2, d, d)
+        p.setPen(Qt.NoPen)
+        p.setBrush(P.col("inv_bg"))
+        p.drawEllipse(icon)
+        self._icon(p, icon, n.get("glyph", "\uE7E7"), "inv_fg", 15)
+        x = icon.right() + P.s(12)
+        right = r.right() - pad
+        from .notifications import SOURCES
+        src = SOURCES.get(n.get("source"), ("", n.get("source", "")))[1]
+        p.setFont(P.font(11))
+        p.setPen(P.col("fg3"))
+        top = r.top() + (P.s(10) if n.get("body") else P.s(7))
+        p.drawText(QRectF(x, top, right - x - P.s(20), P.s(16)), Qt.AlignLeft | Qt.AlignVCenter,
+                   src.upper() if src else "")
+        self._icon(p, QRectF(right - P.s(14), top, P.s(16), P.s(16)), "\uE711", "fg3", 9)
+        p.setFont(P.font(13, 600))
+        p.setPen(P.col("fg"))
+        fm = p.fontMetrics()
+        p.drawText(QRectF(x, top + P.s(17), right - x, P.s(20)), Qt.AlignLeft | Qt.AlignVCenter,
+                   fm.elidedText(n.get("title", ""), Qt.ElideRight, int(right - x)))
+        if n.get("body"):
+            p.setFont(P.font(12))
+            p.setPen(P.col("fg2"))
+            fm = p.fontMetrics()
+            p.drawText(QRectF(x, top + P.s(38), right - x, P.s(18)), Qt.AlignLeft | Qt.AlignVCenter,
+                       fm.elidedText(n["body"].replace("\n", " "), Qt.ElideRight, int(right - x)))
+        p.restore()
+
     def resting_mode(self):
+        if self.toast:
+            return "toast"
         if self.app.current_live():
             return "live"
         if any(self.app.privacy):
@@ -519,7 +601,9 @@ class Island(QWidget):
         return "hidden" if self.app.settings.get("autohide") else "idle"
 
     def live_changed(self):
-        if self.mode != "expanded":
+        if self.mode == "toast":
+            self.update()
+        elif self.mode != "expanded":
             new = self.resting_mode()
             live = self.app.current_live()
             sig = (new, live and live["kind"], live and live.get("title"), live and live.get("sub"),
@@ -542,6 +626,7 @@ class Island(QWidget):
             self.set_fullscreen_hidden(False, force=True)
         key = key or self.page_key
         self.mode = "expanded"
+        self._toast_timer.stop()       # a card waits until the panel closes
         self._leave_since = None
         self.panel.select(key)
         if key != "command":
@@ -569,6 +654,10 @@ class Island(QWidget):
         self._hover_since = None
         self._suppress_until = time.monotonic() + 0.35
         self.retarget()
+        if self.toast is None and self._toasts:
+            self._next_toast()
+        elif self.toast:
+            self._toast_timer.start(int(float(self.app.notifications.cfg["duration"]) * 1000))
 
     def toggle(self):
         if self.mode == "expanded":
@@ -622,6 +711,13 @@ class Island(QWidget):
         T = self.T
         shape = self._global_shape()
         now = time.monotonic()
+        if self.mode == "toast":
+            # hovering a card keeps it on screen; leaving gives it two more seconds
+            if shape.adjusted(-T.s(6), -T.s(6), T.s(6), T.s(6)).contains(pos):
+                self._toast_timer.stop()
+            elif not self._toast_timer.isActive():
+                self._toast_timer.start(2000)
+            return
         if self.mode == "expanded":
             zone = shape.adjusted(-T.s(16), -T.s(40), T.s(16), T.s(18))
             busy = (self._hold or self.dragging or self.input_mode or self.panel.pin.isChecked()
@@ -669,6 +765,14 @@ class Island(QWidget):
     def mousePressEvent(self, e):
         if not self.shape_rect().contains(e.position()):
             e.ignore()
+            return
+        if self.mode == "toast" and self.toast:
+            n = self.toast
+            close = QRectF(self.shape_rect().right() - self.P.s(40), self.shape_rect().top(), self.P.s(40),
+                           self.P.s(34))
+            if e.button() == Qt.LeftButton and not close.contains(e.position()):
+                self.app.notifications.open(n)
+            self.dismiss_toast()
             return
         if e.button() == Qt.RightButton:
             self.context_menu(e.globalPosition().toPoint())

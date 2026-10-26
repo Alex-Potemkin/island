@@ -106,6 +106,7 @@ class MiniCalendar(QWidget):
         for i, d in enumerate("пн вт ср чт пт сб вс".split()):
             p.drawText(QRectF(i * cw, top, cw, T.s(14)), Qt.AlignCenter, d)
         marked = {dt.date.fromtimestamp(rm["at"]) for rm in self.app.reminders.upcoming()}
+        marked |= {e["start"].date() for e in self.app.calendar.events}
         top += T.s(16)
         p.setFont(T.tabular(11, QFont.Normal))
         for ri, week in enumerate(rows):
@@ -333,6 +334,35 @@ class HomePage(Page):
                     rows[i].setText("Пусто — «напомни …» в Alt+Space" if i == 0 and not up else "")
                     subs[i].setText("")
         self.refreshers.append(refresh)
+        return c
+
+    def _card_agenda(self):
+        c = card()
+        cl = _card_layout(c, 14, 6)
+        cl.addWidget(ClickableRow("\uE787", "События", lambda: self.app.open_page("calendar")))
+        rows = [label("", None) for _ in range(3)]
+        subs = [label("", "faint") for _ in range(3)]
+        for r, s_ in zip(rows, subs):
+            cl.addWidget(vbox(r, s_, spacing=0))
+        cl.addStretch(1)
+
+        def refresh():
+            cal = self.app.calendar
+            up = cal.upcoming(7)[:3]
+            for i in range(3):
+                if i < len(up):
+                    e = up[i]
+                    _elide(rows[i], e["title"], 180)
+                    d = e["start"].date()
+                    day = "" if d <= dt.date.today() else ("завтра, " if d == dt.date.today() + dt.timedelta(days=1)
+                                                          else f"{d.day} {MONTHS_GEN[d.month - 1]}, ")
+                    subs[i].setText(day + _event_time(e))
+                else:
+                    rows[i].setText(("Подключите календарь в Настройках" if not cal.has_sources()
+                                     else "Ближайшую неделю свободно") if i == 0 and not up else "")
+                    subs[i].setText("")
+        self.refreshers.append(refresh)
+        self.listen(self.app.calendar.changed, refresh)
         return c
 
     def _card_note(self):
@@ -1398,5 +1428,188 @@ class CommandPage(Page):
         self.input.clear()
 
 
+# ================================================================ calendar
+
+
+DAY_NAMES = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+
+def _day_title(d):
+    today = dt.date.today()
+    if d == today:
+        return "Сегодня"
+    if d == today + dt.timedelta(days=1):
+        return "Завтра"
+    return f"{DAY_NAMES[d.weekday()]}, {d.day} {MONTHS_GEN[d.month - 1]}"
+
+
+def _event_time(e):
+    if e["all_day"]:
+        return "весь день"
+    return f"{e['start']:%H:%M}–{e['end']:%H:%M}"
+
+
+class EventRow(QWidget):
+    def __init__(self, e, now):
+        super().__init__()
+        T = W.T
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(T.s(10), T.s(4), T.s(10), T.s(4))
+        lay.setSpacing(T.s(12))
+        tm = label(_event_time(e), "muted")
+        tm.setFont(T.tabular(12, QFont.Normal))
+        tm.setFixedWidth(T.s(92))
+        lay.addWidget(tm)
+        bar = QWidget()
+        bar.setFixedSize(T.s(3), T.s(28))
+        live = e["start"] <= now < e["end"]
+        bar.setStyleSheet(f"background: {T.c['inv_bg'] if live else T.c['active']}; border-radius: {T.s(1)}px;")
+        lay.addWidget(bar)
+        title = label("")
+        title.setFont(T.font(13, 600 if live else 500))
+        title.setText(title.fontMetrics().elidedText(e["title"], Qt.ElideRight, T.s(330)))
+        sub = label("", "faint")
+        sub.setText(" · ".join(x for x in (e["location"], e["source"]) if x))
+        lay.addWidget(vbox(title, sub, spacing=0), 1)
+        if e.get("url"):
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip("Открыть в браузере")
+
+
+class CalendarPage(Page):
+    key, glyph, title, height = "calendar", "", "Календарь", 430
+
+    def build(self):
+        T = self.T
+        self.status = label("", "faint")
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list.itemClicked.connect(self._open)
+        self.empty = vbox(label("Календари не подключены", "h2"),
+                          label("Google — через вход в аккаунт, Outlook, Яндекс, Apple и любые другие — по iCal-ссылке.",
+                                "muted", wrap=True),
+                          hbox(button("Подключить", "primary", lambda: self.app.open_settings("accounts")), "stretch"),
+                          "stretch", spacing=8)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.empty)
+        self.stack.addWidget(self.list)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(T.s(8))
+        lay.addWidget(self.stack, 1)
+        lay.addWidget(hbox(self.status, "stretch",
+                           button("Аккаунты", "ghost", lambda: self.app.open_settings("accounts")),
+                           button("Обновить", "ghost", self.app.calendar.refresh), spacing=2))
+        self.rows = []
+        self.listen(self.app.calendar.changed, self.refresh)
+        self.refresh()
+
+    def refresh(self):
+        cal = self.app.calendar
+        self.list.clear()
+        self.rows = []
+        if not cal.has_sources():
+            self.stack.setCurrentIndex(0)
+            self.status.setText("")
+            return
+        self.stack.setCurrentIndex(1)
+        now = dt.datetime.now().astimezone()
+        day = None
+        for e in cal.upcoming(14):
+            d = max(e["start"].date(), dt.date.today())
+            if d != day:
+                day = d
+                it = QListWidgetItem(_day_title(d))
+                it.setFlags(Qt.NoItemFlags)
+                it.setFont(W.T.font(12, 600))
+                it.setForeground(W.T.col("fg2"))
+                self.list.addItem(it)
+                self.rows.append(None)
+            it = QListWidgetItem()
+            it.setSizeHint(QSize(10, W.T.s(46)))
+            self.list.addItem(it)
+            self.list.setItemWidget(it, EventRow(e, now))
+            self.rows.append(e)
+        if not self.rows:
+            it = QListWidgetItem("На две недели вперёд событий нет")
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
+        parts = []
+        if cal.updated:
+            parts.append("обновлено " + time.strftime("%H:%M", time.localtime(cal.updated)))
+        if cal.errors:
+            parts.append("ошибка: " + "; ".join(f"{k}: {v}" if k else v for k, v in cal.errors.items())[:120])
+        self.status.setText(" · ".join(parts))
+
+    def _open(self, it):
+        row = self.list.row(it)
+        e = self.rows[row] if row < len(self.rows) else None
+        if e and e.get("url"):
+            import webbrowser
+            webbrowser.open(e["url"])
+
+
+# ================================================================ notification history
+
+
+class InboxRow(QWidget):
+    def __init__(self, n):
+        super().__init__()
+        T = W.T
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(T.s(10), T.s(5), T.s(10), T.s(5))
+        lay.setSpacing(T.s(12))
+        ic = label(n.get("glyph") or "", "icon")
+        ic.setFixedWidth(T.s(20))
+        lay.addWidget(ic)
+        title = label("")
+        title.setFont(T.font(13, 500))
+        title.setText(title.fontMetrics().elidedText(n.get("title", ""), Qt.ElideRight, T.s(420)))
+        body = label("", "faint")
+        body.setText(body.fontMetrics().elidedText(n.get("body", "").replace("\n", " "), Qt.ElideRight, T.s(420)))
+        lay.addWidget(vbox(title, body, spacing=0), 1)
+        lay.addWidget(label(_ago(n.get("t", 0)), "faint"))
+
+
+class InboxPage(Page):
+    key, glyph, title, height = "inbox", "", "Уведомления", 400
+
+    def build(self):
+        T = self.T
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list.itemClicked.connect(self._open)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(T.s(8))
+        lay.addWidget(self.list, 1)
+        lay.addWidget(hbox(label("Клик — открыть", "faint"), "stretch",
+                           button("Настроить", "ghost", lambda: self.app.open_settings("notify")),
+                           button("Очистить", "ghost", self.app.notifications.clear), spacing=2))
+        self.items = []
+        self.listen(self.app.notifications.changed, self.refresh)
+        self.refresh()
+
+    def refresh(self):
+        self.list.clear()
+        self.items = list(self.app.notifications.history)
+        for n in self.items:
+            it = QListWidgetItem()
+            it.setSizeHint(QSize(10, W.T.s(46)))
+            self.list.addItem(it)
+            self.list.setItemWidget(it, InboxRow(n))
+        if not self.items:
+            it = QListWidgetItem("Пока тихо. Здесь соберутся уведомления календаря, GitHub, напоминаний и таймера.")
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
+
+    def _open(self, it):
+        row = self.list.row(it)
+        if row < len(self.items):
+            self.app.notifications.open(self.items[row])
+
+
 PAGES = {cls.key: cls for cls in (HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage,
-                                  ControlPage, ToolsPage, SystemPage, AIPage)}
+                                  ControlPage, ToolsPage, SystemPage, AIPage, CalendarPage, InboxPage)}

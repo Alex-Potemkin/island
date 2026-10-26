@@ -46,6 +46,7 @@ args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefil
         "--specpath", BUILD,
         "--add-data", f"{assets}{os.pathsep}island_app/assets",   # bundled icon font
         "--collect-binaries", "pyzbar",
+        "--collect-data", "tzdata",                                # iCal time zones (Windows has no tz database)
         "--hidden-import", "qrcode.image.pil",
         "--exclude-module", "tkinter"]
 if IS_WIN:

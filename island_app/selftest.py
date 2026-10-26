@@ -64,14 +64,29 @@ def run(app, argv):
     step(200, app.clear_alert, None)
     # sample data
     step(100, lambda: _sample_data(app), None)
+    # notifications: a card, a GitHub card, and the one-line style
+    step(400, lambda: app.notifications.push("calendar", "Созвон по дизайну", "через 10 мин · 15:00 · Zoom"), None)
+    step(900, None, "60_toast_calendar")
+    step(100, lambda: app.island.dismiss_toast(), None)
+    step(600, lambda: app.notifications.push("github", "Fix tray icon on Linux", "octo/island · pull request"), None)
+    step(900, None, "61_toast_github")
+    step(100, lambda: app.island.dismiss_toast(), None)
+    step(600, lambda: (app.settings.set("notifications", {"style": "pill", "sound": False}),
+                       app.notifications.push("scripts", "Сборка готова", "island · 2 мин 14 с")), None)
+    step(900, None, "62_pill_notify")
+    step(100, lambda: (app.clear_alert(), app.settings.set("notifications", {"sound": False})), None)
     # pages
     for i, key in enumerate(["home", "clipboard", "shelf", "notes", "timer", "reminders", "control", "tools",
                              "system", "ai", "settings"]):
         step(300, lambda k=key: isl().expand(k), None)
         step(1300 if key != "system" else 3200, None, f"1{i:01d}_{key}" if i < 10 else f"2{i - 10}_{key}")
+    for key, name in (("calendar", "26_calendar"), ("inbox", "27_inbox")):
+        step(300, lambda k=key: isl().expand(k), None)
+        step(1300, None, name)
     step(200, lambda: isl().collapse(), None)
     # settings sections and first run
-    for i, name in ((1, "23_settings_look"), (2, "21_settings_builder"), (3, "22_settings_more")):
+    for i, name in ((1, "23_settings_look"), (2, "21_settings_builder"), (3, "24_settings_notify"),
+                    (4, "25_settings_accounts"), (5, "22_settings_more")):
         step(300, lambda i=i: (isl().expand("settings"), isl().panel.page("settings")._section(i)), None)
         step(1200, None, name)
     step(200, lambda: isl().collapse(), None)
@@ -151,7 +166,32 @@ def run(app, argv):
     runner()
 
 
+def _sample_events(app):
+    import datetime as dt
+    now = dt.datetime.now().astimezone().replace(second=0, microsecond=0)
+    day = now.replace(hour=0, minute=0)
+
+    def ev(d, h, m, mins, title, loc="", src="Google"):
+        st = day + dt.timedelta(days=d, hours=h, minutes=m)
+        return {"title": title, "start": st, "end": st + dt.timedelta(minutes=mins), "all_day": False,
+                "location": loc, "source": src, "url": "", "id": title + str(d)}
+    soon = now + dt.timedelta(minutes=25)
+    evs = [{"title": "Созвон по дизайну", "start": soon, "end": soon + dt.timedelta(minutes=45), "all_day": False,
+            "location": "Zoom", "source": "Google", "url": "", "id": "s"},
+           ev(0, 23, 0, 30, "Ревью PR", "", "GitHub-календарь"),
+           ev(1, 9, 30, 15, "Планёрка, команда", "Переговорная 2", "Работа · iCal"),
+           ev(1, 13, 0, 60, "Обед с Сашей", "Кофейня"),
+           ev(2, 18, 0, 90, "Тренировка", "", "Яндекс · iCal")]
+    cal = app.calendar
+    cal.has_sources = lambda: True
+    cal.refresh = lambda: None
+    cal.events = sorted(evs, key=lambda e: e["start"])
+    cal.updated = __import__("time").time()
+    cal.changed.emit()
+
+
 def _sample_data(app):
+    _sample_events(app)
     import uuid
     if not app.store["notes"]:
         app.store["notes"].extend([
