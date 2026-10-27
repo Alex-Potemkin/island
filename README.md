@@ -3,19 +3,19 @@
 [![CI / CD](https://github.com/Alex-Potemkin/island/actions/workflows/build.yml/badge.svg)](https://github.com/Alex-Potemkin/island/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/Alex-Potemkin/island)](https://github.com/Alex-Potemkin/island/releases/latest)
 
-**Скачать:** [последний релиз](https://github.com/Alex-Potemkin/island/releases/latest) — `Island.exe` (Windows)
-и `Island-linux-x86_64` (Linux), или [nightly](https://github.com/Alex-Potemkin/island/releases/tag/nightly) —
+**Скачать:** [последний релиз](https://github.com/Alex-Potemkin/island/releases/latest) — `Island.exe` (Windows),
+`Island-macos-arm64.dmg` (Mac на M1–M4), `Island-macos-x86_64.dmg` (Mac на Intel) и `Island-linux-x86_64` (Linux), или [nightly](https://github.com/Alex-Potemkin/island/releases/tag/nightly) —
 сборка из последнего коммита.
 
-Минималистичный Dynamic Island для Windows 10/11 и Linux: чёрная (или белая) пилюля вверху экрана.
+Минималистичный Dynamic Island для Windows 10/11, macOS и Linux: чёрная (или белая) пилюля вверху экрана.
 В ней показываются живые события, а по наведению она раскрывается в панель инструментов.
 Сделано по мотивам [islandapp.pro](https://islandapp.pro), но строже: монохром, без маскотов,
 пружинные анимации. Функций больше, чем в оригинале, и **панель собирается под себя**: какие вкладки,
 в каком порядке, какие карточки и кнопки на главной, что показывает пилюля в покое.
 
 **Стек:** Python 3.12 + PySide6 (Qt 6). Qt даёт прозрачное окно без рамки с попиксельной альфой
-и одинаково работает в Windows и Linux. Всё, что зависит от системы, вынесено в `island_app/osapi`.
-PyInstaller собирает приложение в один файл для каждой ОС.
+и одинаково работает в Windows, macOS и Linux. Всё, что зависит от системы, вынесено в `island_app/osapi`.
+PyInstaller собирает приложение в один файл (Windows, Linux) или `Island.app` в `.dmg` (macOS).
 
 ![Живые события](docs/live.png)
 
@@ -61,6 +61,32 @@ Linux-версия проверена в Ubuntu 24.04 (WSL) под Xvfb с ок�
 и `linux/install.sh`. Бинарник, собранный в Ubuntu 24.04, требует glibc этой версии или новее;
 для старых дистрибутивов собирайте в Ubuntu 22.04 (так делает CI).
 
+### macOS
+Откройте `.dmg` и перетащите Island в «Программы». Приложение не подписано сертификатом Apple, поэтому
+при первом запуске macOS его остановит: Системные настройки → Конфиденциальность и безопасность →
+«Всё равно открыть» (на macOS до 15 — правый клик по Island → «Открыть»). Или в Терминале:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Island.app
+```
+
+Island живёт поверх строки меню, по центру (на MacBook с вырезом пилюля пока не обтекает вырез,
+её можно сдвинуть: Настройки → Вид → «Отступ сверху» или «Где пилюля»). Значка в Dock у него нет,
+меню — значок в строке меню. Разрешения, которые macOS попросит по ходу дела:
+- **Универсальный доступ** — вставка из буфера в прежнее окно и блокировка экрана;
+- **Запись экрана** — скриншоты, пипетка, QR и текст с экрана;
+- **Автоматизация** — что играет в Spotify и «Музыке» (macOS 15.4 закрыла общий «Сейчас играет»
+  для сторонних приложений, поэтому Island спрашивает эти два плеера напрямую).
+
+Горячие клавиши те же, `Ctrl` — это `⌃`, `Alt` — `⌥`; любое сочетание можно заменить на `cmd+…`.
+Bluetooth переключается, если установлен `blueutil` (`brew install blueutil`); яркости встроенного
+экрана нет (у macOS нет для этого открытого API). Уведомления других приложений на macOS прочитать
+нельзя: в пилюлю приходят уведомления Island, календарей, GitHub, принтера и вебхуков.
+
+Mac-версия собирается и проверяется в CI на Apple Silicon и Intel: все проверки, демо из исходников
+и из собранного `Island.app`, подпись и образ `.dmg`. Наведение, фокус и вставку на живом Маке CI
+проверить не может.
+
 При первом запуске пилюля раскроется и задаст три вопроса: что положить в панель, какая тема
 и как её открывать. Повторный запуск не открывает второй экземпляр, а раскрывает уже запущенный.
 
@@ -70,22 +96,24 @@ Linux-версия проверена в Ubuntu 24.04 (WSL) под Xvfb с ок�
 python build_exe.py
 ```
 
-В Windows получится `Island.exe` (около 70 МБ), в Linux — `Island-linux-x86_64`. Собирать нужно
-на той ОС, для которой нужен файл. Python на целевой машине не нужен.
+В Windows получится `Island.exe` (около 70 МБ), в Linux — `Island-linux-x86_64`, в macOS — `Island.app`
+и `Island-macos-<arm64|x86_64>.dmg` (для QR нужен `brew install zbar`). Собирать нужно на той ОС,
+для которой нужен файл. Python на целевой машине не нужен.
 
 ### CI / CD (GitHub Actions)
 [.github/workflows/build.yml](.github/workflows/build.yml):
 
 1. **lint** — `ruff` (синтаксис, неопределённые имена, лишние импорты) и компиляция всех файлов; здесь же
    вычисляется версия: из тега (`v1.2.0` → `1.2.0`) или `1.1.0-nightly.<номер>+<коммит>`.
-2. **linux** (Ubuntu 22.04 — максимальная совместимость по glibc) и **windows** параллельно: все проверки
+2. **linux** (Ubuntu 22.04 — максимальная совместимость по glibc), **windows** и **macos** (Apple Silicon
+   и Intel) параллельно: все проверки
    (`check_tools`, `check_layout`, `check_integrations`, `check_calendar`, `check_notes`, `check_desk`),
    сборка одного файла с вшитой версией и демо-прогон уже собранного файла (≥ 40 скриншотов).
    Бинарники и скриншоты — артефакты запуска; pip-зависимости кэшируются.
 3. **publish** — только для push:
    - в `main` → пре-релиз **nightly** пересоздаётся с файлами из этого коммита;
-   - тег `v*` → релиз «Island X.Y.Z» с автоматическими заметками, `Island.exe`,
-     `Island-linux-x86_64` и `SHA256SUMS.txt`.
+   - тег `v*` → релиз «Island X.Y.Z» с автоматическими заметками, `Island.exe`, `Island-linux-x86_64`,
+     `Island-macos-arm64.dmg`, `Island-macos-x86_64.dmg` и `SHA256SUMS.txt`.
 
 Pull request'ы проходят шаги 1–2. Dependabot раз в неделю предлагает обновления экшенов и зависимостей.
 
@@ -388,7 +416,8 @@ island_app/
   desk_ui.py            вкладки и карточки «Приложения», «Принтер», «DeskDash»
   calendar_ui.py        календарь: неделя, месяц, список, редактор своих событий
   capture.py            скриншот с разметкой, пипетка, выбор области
-  osapi/                windows.py (Win32/WinRT) и linux.py (xdotool, playerctl, nmcli…) с общим интерфейсом
+  osapi/                windows.py (Win32/WinRT), macos.py (AppKit, Carbon, CoreGraphics) и linux.py
+                        (xdotool, playerctl, nmcli…) с общим интерфейсом
   theme.py              темы, акценты, масштаб, углы, прозрачность, анимация, шрифт
   widgets.py            свои виджеты
   assets/               IslandIcons.otf
