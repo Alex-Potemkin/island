@@ -444,17 +444,27 @@ def _mac_ocr_png(png_bytes, done, failed):
         from Foundation import NSData
         data = NSData.dataWithBytes_length_(bytes(png_bytes), len(png_bytes))
         handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
-        req = Vision.VNRecognizeTextRequest.alloc().init()
-        req.setRecognitionLevel_(0)                     # accurate
-        req.setUsesLanguageCorrection_(True)
-        try:
-            req.setRecognitionLanguages_(["ru-RU", "en-US"])
-        except Exception:  # noqa: BLE001 - older macOS without Russian: English only
-            pass
-        ok, err = handler.performRequests_error_([req], None)
-        if not ok:
-            raise RuntimeError(str(err))
-        return "\n".join(str(o.topCandidates_(1)[0].string()) for o in (req.results() or []))
+        def recognise(level, langs):
+            req = Vision.VNRecognizeTextRequest.alloc().init()
+            req.setRecognitionLevel_(level)            # 0 accurate, 1 fast
+            req.setUsesLanguageCorrection_(level == 0)
+            if langs:
+                req.setRecognitionLanguages_(langs)
+            ok, err = handler.performRequests_error_([req], None)
+            if not ok:
+                raise RuntimeError(str(err))
+            return "\n".join(str(o.topCandidates_(1)[0].string()) for o in (req.results() or []))
+        text = ""
+        # accurate with Russian first; some Macs (Intel without the newer models) return nothing for
+        # that combination, so fall back to the defaults and then to the fast recogniser
+        for level, langs in ((0, ["ru-RU", "en-US"]), (0, None), (1, None)):
+            try:
+                text = recognise(level, langs)
+            except Exception:  # noqa: BLE001 - try the next combination
+                continue
+            if text.strip():
+                break
+        return text
     bridge.run_thread(work, done, failed)
 
 
