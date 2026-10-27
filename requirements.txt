@@ -10,7 +10,7 @@ tzdata>=2024.1         # time zones for iCal on Windows
 winrt-runtime>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
-winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=4!10.0.28000.2705; sys_platform == "win32"
 winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
 winrt-Windows.Devices.Radios>=2.0; sys_platform == "win32"
 winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
