@@ -70,6 +70,7 @@ def main():
     app.hard_exit = False
     app.settings.set("onboarded", True)
     steps = []
+    state = {}
 
     class _Isl:   # the window is recreated by rebuild(); always talk to the current one
         def __getattr__(self, name):
@@ -148,11 +149,16 @@ def main():
         check("notes survive a restart", {x["text"] for x in again["notes"]} == {x["text"] for x in app.store["notes"]})
 
     def eco_on():
+        # the media poll's (normal, economy) intervals as registered: 1/2 s on Windows and Linux, 2/4 s on
+        # macOS. CI runners count as weak machines, so "auto" may already be economy here.
+        state["media_normal"], state["media_eco"] = next((n, e) for ref, n, e in perf._timers
+                                                         if ref() is app.media._timer)
         app.settings.set("performance", "eco")
         app.rebuild()
 
     def eco_check():
-        check("economy mode on", perf.ECO and app.island._poll.interval() == 70 and app.media._timer.interval() == 2000)
+        check("economy mode on", perf.ECO and app.island._poll.interval() == 70
+              and app.media._timer.interval() == state["media_eco"], app.media._timer.interval())
         isl.expand("calendar")
 
     def eco_open():
@@ -164,7 +170,7 @@ def main():
 
     def eco_off():
         check("back to normal mode", not perf.ECO and app.island._poll.interval() == 40
-              and app.media._timer.interval() == 1000)
+              and app.media._timer.interval() == state["media_normal"])
 
     step(400, plus_button)
     step(500, switch_and_search)

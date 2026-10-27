@@ -358,6 +358,7 @@ def wait_keys_released(timeout=0.6):
 
 NAME = "Windows"
 IS_WINDOWS = True
+IS_MAC = False
 HAS_GLOBAL_HOTKEYS = True
 CAN_PASTE = True
 CAN_SET_DARK = True
@@ -565,3 +566,7 @@ def set_banner(app_id, value):
         return
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "ShowBanner", 0, winreg.REG_DWORD, int(value))
+
+
+def prepare_app(qapp):
+    """Platform setup right after the QApplication exists (macOS: no Dock icon)."""

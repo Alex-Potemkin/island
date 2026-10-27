@@ -16,5 +16,9 @@ winrt-Windows.Devices.Radios>=2.0; sys_platform == "win32"
 winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
 winrt-Windows.Globalization>=2.0; sys_platform == "win32"
+# macOS: windows above the menu bar, now playing, OCR, hot keys
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pyobjc-framework-Vision>=10.0; sys_platform == "darwin"
 # build only
 pyinstaller>=6.0

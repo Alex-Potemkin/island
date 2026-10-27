@@ -20,6 +20,7 @@ import time
 
 NAME = "Linux"
 IS_WINDOWS = False
+IS_MAC = False
 HAS_GLOBAL_HOTKEYS = False
 SETTINGS_LABEL = "Настройки системы"
 TASKS_LABEL = "Системный монитор"
@@ -348,3 +349,7 @@ def get_banner(_app_id):
 
 def set_banner(_app_id, _value):
     pass
+
+
+def prepare_app(qapp):
+    """Platform setup right after the QApplication exists (macOS: no Dock icon)."""

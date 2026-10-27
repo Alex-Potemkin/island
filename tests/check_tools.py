@@ -6,6 +6,7 @@ import datetime as dt
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ISLAND_HOME", os.path.join(tempfile.gettempdir(), "island-test"))
@@ -87,12 +88,19 @@ def main():
     check("colour picker reads the frozen pixel", c == ref, c.name())
     pk.deleteLater()
 
+    started = time.monotonic()
+
     def finish():
+        # OCR runs on a worker; slow machines (virtual Intel Macs on CI) need more than a few seconds
+        if "ocr" not in state and time.monotonic() - started < 40:
+            QTimer.singleShot(250, finish)
+            return
         text = state.get("ocr", "")
-        check("OCR recognises rendered text", "Island" in text and "2026" in text, repr(text))
+        check("OCR recognises rendered text", "Island" in text and "2026" in text,
+              f"{text!r} in {time.monotonic() - started:.1f} s")
         print(f"\n{sum(results)}/{len(results)} passed", flush=True)
         app.exit(0 if all(results) else 1)
-    QTimer.singleShot(4000, finish)
+    QTimer.singleShot(500, finish)
     return app.exec()
 
 

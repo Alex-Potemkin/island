@@ -1246,7 +1246,7 @@ class SystemPage(Page):
         self.listen(self.app.monitor.tick, self._tick)
         self._n = 0
         self._procs_busy = False
-        self.procs.setFont(QFont("Consolas" if osapi.IS_WINDOWS else "monospace", max(6, T.s(11.5))))
+        self.procs.setFont(QFont("Consolas" if osapi.IS_WINDOWS else ("Menlo" if osapi.IS_MAC else "monospace"), max(6, T.s(11.5))))
 
     def _tick(self):
         if not self.isVisible():

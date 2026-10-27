@@ -152,6 +152,8 @@ class Island(QWidget):
         self.P = app.pill_theme     # the pill: UI scale × pill size
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        if osapi.IS_MAC:
+            self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)   # a Tool window hides when the app is inactive
         self.setAcceptDrops(True)
         self.setWindowTitle("Island")
         self.mode = "idle"            # idle | hidden | live | expanded
@@ -935,7 +937,7 @@ class Island(QWidget):
         if self._fs_hidden or not self.isVisible() or self.app.demo:
             return
         self._fg_tick += 1
-        if osapi.IS_WINDOWS or self._fg_tick % 12 == 0:  # on Linux this spawns xdotool, so poll slower
+        if osapi.IS_WINDOWS or osapi.IS_MAC or self._fg_tick % 12 == 0:  # on Linux this spawns xdotool
             fg = osapi.foreground()
             if fg and not osapi.is_own(fg):
                 self.prev_hwnd = fg

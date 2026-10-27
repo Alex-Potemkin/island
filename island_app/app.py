@@ -694,6 +694,7 @@ def main():
     qapp = QApplication(sys.argv)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName("Island")
+    osapi.prepare_app(qapp)
     server = single_instance(f"action:{action}".encode() if action else b"show")
     if server is None:
         return 0
