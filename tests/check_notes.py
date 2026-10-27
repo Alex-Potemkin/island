@@ -149,13 +149,16 @@ def main():
         check("notes survive a restart", {x["text"] for x in again["notes"]} == {x["text"] for x in app.store["notes"]})
 
     def eco_on():
-        state["media_normal"] = app.media._timer.interval()     # 1 s on Windows/Linux, 2 s on macOS
+        # the media poll's (normal, economy) intervals as registered: 1/2 s on Windows and Linux, 2/4 s on
+        # macOS. CI runners count as weak machines, so "auto" may already be economy here.
+        state["media_normal"], state["media_eco"] = next((n, e) for ref, n, e in perf._timers
+                                                         if ref() is app.media._timer)
         app.settings.set("performance", "eco")
         app.rebuild()
 
     def eco_check():
         check("economy mode on", perf.ECO and app.island._poll.interval() == 70
-              and app.media._timer.interval() == 2 * state["media_normal"], app.media._timer.interval())
+              and app.media._timer.interval() == state["media_eco"], app.media._timer.interval())
         isl.expand("calendar")
 
     def eco_open():
