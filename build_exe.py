@@ -67,7 +67,7 @@ def finish_mac_app(app, version):
     info = os.path.join(app, "Contents", "Info.plist")
     with open(info, "rb") as f:
         plist = plistlib.load(f)
-    short = (version or "1.1.0").split("-")[0].split("+")[0]
+    short = (version or "1.2.0").split("-")[0].split("+")[0]
     plist.update({
         "CFBundleName": "Island", "CFBundleDisplayName": "Island", "CFBundleIdentifier": "pro.island.app",
         "CFBundleShortVersionString": short, "CFBundleVersion": short,
