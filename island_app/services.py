@@ -444,9 +444,11 @@ def _mac_ocr_png(png_bytes, done, failed):
         from Foundation import NSData
         data = NSData.dataWithBytes_length_(bytes(png_bytes), len(png_bytes))
         handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
-        def recognise(level, langs):
+        def recognise(level, langs, cpu=False):
             req = Vision.VNRecognizeTextRequest.alloc().init()
             req.setRecognitionLevel_(level)            # 0 accurate, 1 fast
+            if cpu:
+                req.setUsesCPUOnly_(True)              # virtual Macs without a usable GPU
             req.setUsesLanguageCorrection_(level == 0)
             if langs:
                 req.setRecognitionLanguages_(langs)
@@ -455,11 +457,12 @@ def _mac_ocr_png(png_bytes, done, failed):
                 raise RuntimeError(str(err))
             return "\n".join(str(o.topCandidates_(1)[0].string()) for o in (req.results() or []))
         text = ""
-        # accurate with Russian first; some Macs (Intel without the newer models) return nothing for
-        # that combination, so fall back to the defaults and then to the fast recogniser
-        for level, langs in ((0, ["ru-RU", "en-US"]), (0, None), (1, None)):
+        # accurate with Russian first; some Macs (Intel, virtual machines) now and then return nothing,
+        # so fall back to the default languages, the fast recogniser and the CPU
+        for level, langs, cpu in ((0, ["ru-RU", "en-US"], False), (0, None, False), (1, None, False),
+                                  (0, ["ru-RU", "en-US"], True), (1, None, True)):
             try:
-                text = recognise(level, langs)
+                text = recognise(level, langs, cpu)
             except Exception:  # noqa: BLE001 - try the next combination
                 continue
             if text.strip():
