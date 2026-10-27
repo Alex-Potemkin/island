@@ -178,7 +178,7 @@ class Island(QWidget):
         self.resize(self.max_w + 2 * self.pad, self.max_h + self.pad)
         k = T.stiffness or 420.0
         self.springs = {"w": Spring(T.s(124), k), "h": Spring(T.s(30), k), "y": Spring(self._top(), k),
-                        "r": Spring(T.s(15), k), "o": Spring(0, 260, 1.0)}
+                        "r": Spring(T.s(15), k), "o": Spring(0, 260, 1.0), "b": Spring(0, k)}
         self.panel = Panel(self)
         self.panel.hide()
         self._anim = perf.timer(QTimer(self, timeout=self._step), 15, 33)
@@ -223,6 +223,35 @@ class Island(QWidget):
         w, h = max(s["w"].v, 4), max(s["h"].v, 2)
         return QRectF(self._x(w), s["y"].v, w, h)
 
+    def bubble_rect(self, target=False):
+        """The second activity's bubble, beside the pill (on its left when the pill sits on the right)."""
+        b = self.springs["b"].target if target else self.springs["b"].v
+        if b < 2:
+            return None
+        r = self.target_rect() if target else self.shape_rect()
+        gap = self.P.s(7)
+        h = r.height()
+        x = r.left() - gap - b if self.T.position == "right" else r.right() + gap
+        return QRectF(x, r.top(), b, h)
+
+    def bubble_width(self, sec):
+        P = self.P
+        h = P.s(36)
+        if not sec:
+            return 0
+        if sec["kind"] in ("print", "timer"):
+            text = self._bubble_text(sec)
+            return h + QFontMetrics(P.tabular(12)).horizontalAdvance(text) + P.s(10)
+        return h
+
+    @staticmethod
+    def _bubble_text(sec):
+        if sec["kind"] == "print":
+            return f"{int(round(sec.get('progress', 0) * 100))}%"
+        if sec["kind"] == "timer":
+            return sec.get("value", "")
+        return ""
+
     def target_rect(self):
         s = self.springs
         return QRectF(self._x(s["w"].target), s["y"].target, s["w"].target, s["h"].target)
@@ -247,6 +276,8 @@ class Island(QWidget):
         else:
             w, h, r, y, o = self.idle_width(), P.s(30), P.s(15), self._top(), 0.0
         s["w"].target, s["h"].target, s["r"].target, s["y"].target, s["o"].target = w, h, r, y, o
+        sec = self.app.second_live() if self.mode == "live" and live else None
+        s["b"].target = self.bubble_width(sec)
         if self.mode == "expanded":
             tr = self.target_rect()
             self.panel.setGeometry(tr.toRect())
@@ -310,6 +341,10 @@ class Island(QWidget):
         rad = min(self.springs["r"].v, r.height() / 2) + 1
         path = QPainterPath()
         path.addRoundedRect(r, rad, rad)
+        b = self.bubble_rect()
+        if b is not None:
+            b = b.adjusted(-1, -1, 1, 1)
+            path.addRoundedRect(b, b.height() / 2, b.height() / 2)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _apply_panel_opacity(self):
@@ -359,6 +394,7 @@ class Island(QWidget):
             self.paint_live(p, r)
         elif self.mode == "toast" and self.toast:
             self.paint_toast(p, r)
+        self.paint_bubble(p)
 
     def _clock_tick(self):
         if self.mode == "idle" and (self.idle_text() or self.app.notifications.unread):
@@ -473,6 +509,78 @@ class Island(QWidget):
                 p.drawText(r.adjusted(0, 0, -badge, 0), Qt.AlignCenter, text)
             self._paint_badge(p, r)
         p.restore()
+
+    def paint_bubble(self, p):
+        b = self.bubble_rect()
+        if b is None:
+            return
+        P = self.P
+        p.save()
+        p.setBrush(P.bg())
+        p.setPen(QPen(P.col("border"), 1) if not P.dark else Qt.NoPen)
+        p.drawRoundedRect(b, b.height() / 2, b.height() / 2)
+        sec = self.app.second_live()
+        full = self.springs["b"].target
+        alpha = max(0.0, min(1.0, (b.width() / full - 0.75) * 4)) if full else 0.0
+        if sec and alpha > 0.02:
+            p.setOpacity(alpha)
+            clip = QPainterPath()
+            clip.addRoundedRect(b, b.height() / 2, b.height() / 2)
+            p.setClipPath(clip)
+            d = b.height() - P.s(12)
+            ring = QRectF(b.left() + P.s(6), b.top() + P.s(6), d, d)
+            kind = sec["kind"]
+            if kind == "music":
+                pm = self._art_pixmap(sec.get("art"))
+                if pm:
+                    path = QPainterPath()
+                    path.addEllipse(ring)
+                    p.save()
+                    p.setClipPath(path, Qt.IntersectClip)
+                    p.setRenderHint(QPainter.SmoothPixmapTransform)
+                    p.drawPixmap(ring.toRect(), pm)
+                    p.restore()
+                else:
+                    self._mini_eq(p, ring, sec.get("playing"))
+            elif kind in ("print", "timer"):
+                prog = sec.get("progress", 0)
+                if kind == "timer":
+                    prog = 1 - prog if prog else 0
+                p.setPen(QPen(P.col("active"), P.s(2.2)))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(ring.adjusted(P.s(2), P.s(2), -P.s(2), -P.s(2)))
+                if prog:
+                    p.setPen(QPen(P.col("fg"), P.s(2.2), Qt.SolidLine, Qt.RoundCap))
+                    p.drawArc(ring.adjusted(P.s(2), P.s(2), -P.s(2), -P.s(2)), 90 * 16, int(-360 * 16 * prog))
+                glyph = "\uE769" if sec.get("paused") else ("\uE749" if kind == "print" else "\uE916")
+                self._icon(p, ring, glyph, "fg2", 8)
+                p.setFont(P.tabular(12))
+                p.setPen(P.col("fg"))
+                p.drawText(QRectF(ring.right() + P.s(2), b.top(), b.right() - ring.right() - P.s(8), b.height()),
+                           Qt.AlignVCenter | Qt.AlignLeft, self._bubble_text(sec))
+            elif kind == "claude" and sec.get("busy"):
+                a = (time.monotonic() * 360) % 360
+                rr = ring.adjusted(P.s(4), P.s(4), -P.s(4), -P.s(4))
+                p.setPen(QPen(P.col("active"), P.s(2)))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(rr)
+                p.setPen(QPen(P.col("fg"), P.s(2), Qt.SolidLine, Qt.RoundCap))
+                p.drawArc(rr, int(-a * 16), 90 * 16)
+            else:
+                self._icon(p, ring, sec.get("glyph") or "\uE896", "fg", 12)
+        p.restore()
+
+    def _mini_eq(self, p, box, playing):
+        P = self.P
+        bars, bw, gap = 3, P.s(2.5), P.s(2.5)
+        x0 = box.center().x() - (bars * bw + (bars - 1) * gap) / 2
+        t = time.monotonic()
+        p.setPen(Qt.NoPen)
+        p.setBrush(P.col("fg"))
+        for i in range(bars):
+            v = 0.35 + 0.65 * abs(math.sin(t * (2.6 + i * 0.9) + i * 1.7)) if playing else 0.25
+            bh = max(P.s(3), box.height() * 0.62 * v)
+            p.drawRoundedRect(QRectF(x0 + i * (bw + gap), box.center().y() - bh / 2, bw, bh), bw / 2, bw / 2)
 
     def _icon(self, p, rect, glyph, color="fg", px=15):
         p.setFont(self.P.icon_font(px))
@@ -620,12 +728,18 @@ class Island(QWidget):
     _live_privacy = _live_alert
 
     def _update_pill(self):
-        self.update(self.shape_rect().toAlignedRect().adjusted(-2, -2, 2, 2))
+        r = self.shape_rect()
+        b = self.bubble_rect()
+        if b is not None:
+            r = r.united(b)
+        self.update(r.toAlignedRect().adjusted(-2, -2, 2, 2))
 
     def _update_live_anim(self):
         live = self.app.current_live()
-        animated = self.mode == "live" and live and (
-            (live["kind"] == "music" and live.get("playing")) or (live["kind"] == "claude" and live.get("busy")))
+        sec = self.app.second_live() if self.mode == "live" and live else None
+        moving = lambda x: x and ((x["kind"] == "music" and x.get("playing") and not (x is sec and x.get("art")))
+                                  or (x["kind"] == "claude" and x.get("busy")))
+        animated = self.mode == "live" and live and (moving(live) or moving(sec))
         if animated and not self._live_anim.isActive():
             self._live_anim.start()
         elif not animated and self._live_anim.isActive():
@@ -719,8 +833,10 @@ class Island(QWidget):
         elif self.mode != "expanded":
             new = self.resting_mode()
             live = self.app.current_live()
+            sec = self.app.second_live() if new == "live" else None
             sig = (new, live and live["kind"], live and live.get("title"), live and live.get("sub"),
-                   live and live.get("value"), live and live.get("playing"), live and live.get("busy"))
+                   live and live.get("value"), live and live.get("playing"), live and live.get("busy"),
+                   sec and sec["kind"], sec and self._bubble_text(sec), sec and sec.get("paused"))
             if sig != self._last_live:
                 self._last_live = sig
                 self.mode = new
@@ -810,7 +926,9 @@ class Island(QWidget):
     # ------------------------------------------------------------ hover logic
 
     def _global_shape(self):
-        r = self.shape_rect().toRect()
+        r = self.shape_rect()
+        b = self.bubble_rect() if self.mode == "live" else None
+        r = (r.united(b) if b is not None else r).toRect()
         return QRect(self.mapToGlobal(r.topLeft()), r.size())
 
     def _poll_cursor(self):
@@ -885,6 +1003,14 @@ class Island(QWidget):
     # ------------------------------------------------------------ input events
 
     def mousePressEvent(self, e):
+        b = self.bubble_rect()
+        if b is not None and self.mode == "live" and b.contains(e.position()) and e.button() == Qt.LeftButton:
+            sec = self.app.second_live()
+            if sec and sec.get("action"):
+                sec["action"]()
+            else:
+                self.expand({"music": "home", "timer": "timer", "print": "printer"}.get(sec and sec["kind"]))
+            return
         if not self.shape_rect().contains(e.position()):
             e.ignore()
             return

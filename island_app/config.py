@@ -41,7 +41,8 @@ DEFAULTS = {
     "collapse_delay_ms": 450,
     "dnd": False,               # do not disturb: no transient alerts
     "live": {"music": True, "timer": True, "layout": True, "caps": True,
-             "privacy": True, "downloads": True, "claude": True, "print": True},
+             "privacy": True, "downloads": True, "claude": True, "print": True,
+             "split": True},          # a second activity in a bubble next to the pill
     "clipboard": {"max_items": 200, "save_images": True},
     "hotkeys": {
         "command": "alt+space",

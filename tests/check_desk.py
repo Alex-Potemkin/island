@@ -23,7 +23,7 @@ with open(os.path.join(HOME, "settings.json"), "w", encoding="utf-8") as f:
                "layout": {"tabs": ["home", "clipboard", "notes"], "home": ["music", "clock"],
                           "quick": ["screenshot"], "idle": "empty"}}, f)
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtWidgets import QAbstractButton, QApplication  # noqa: E402
 
 from island_app import devices  # noqa: E402
@@ -292,6 +292,42 @@ def main():
         check("command bar «принтер»", any("47%" in r["title"] for r in res))
         printer.report(mc_percent=48)            # P1/A1 send only what changed
 
+    def split_music():
+        app.island.collapse()
+        while app.island.toast:
+            app.island.dismiss_toast()
+        app.media.state = {"active": True, "title": "Midnight City", "artist": "M83", "playing": True,
+                           "position": 0, "duration": 240, "stamp": time.time(), "art": b""}
+        app.media.changed.emit(app.media.state)
+
+    def split_check():
+        isl = app.island
+        live, sec = app.current_live(), app.second_live()
+        check("print and music at once: print in the pill, music in a bubble",
+              live and live["kind"] == "print" and sec and sec["kind"] == "music", (live and live["kind"], sec))
+        b, r = isl.bubble_rect(target=True), isl.target_rect()
+        check("bubble sits next to the pill", b is not None and b.left() > r.right() and b.top() == r.top()
+              and b.right() < isl.width(), (b, r))
+        shot("pill_split")
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QMouseEvent
+        isl.retarget(snap=True)
+        c = isl.bubble_rect().center()
+        ev = QMouseEvent(QMouseEvent.MouseButtonPress, QPointF(c), QPointF(isl.mapToGlobal(c.toPoint())),
+                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        isl.mousePressEvent(ev)
+        check("click on the bubble opens its tab", isl.mode == "expanded" and isl.panel.current.key == "home",
+              isl.panel.current and isl.panel.current.key)
+        isl.collapse()
+        app.set_setting("live.split", False)
+
+    def split_off():
+        check("«Два события сразу» off: no bubble", app.second_live() is None
+              and app.island.bubble_rect(target=True) is None)
+        app.set_setting("live.split", True)
+        app.media.state = {"active": False}
+        app.media.changed.emit(app.media.state)
+
     def printer_delta():
         check("partial reports are merged", app.printer.percent == 48 and app.printer.remaining == 72)
         printer.report(gcode_state="FINISH", mc_percent=100, mc_remaining_time=0)
@@ -364,7 +400,10 @@ def main():
     step(1500, printer_bad_code)
     step(4500, printer_connected)       # the retry after a failure waits 3 s
     step(1600, printer_running)
-    step(1400, printer_delta)
+    step(300, split_music)
+    step(900, split_check)
+    step(700, split_off)
+    step(600, printer_delta)
     step(1400, printer_done)
     step(200, deskdash)
     step(1200, deskdash_online)

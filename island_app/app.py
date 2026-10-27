@@ -19,6 +19,7 @@ SERVER_NAME = "IslandApp-" + (os.environ.get("USERNAME") or "user")
 if os.environ.get("ISLAND_HOME"):  # a test profile runs as its own instance
     SERVER_NAME += "-" + str(zlib.crc32(os.environ["ISLAND_HOME"].encode()))
 
+BUBBLE_KINDS = ("music", "print", "timer", "download", "claude")
 PRIORITY = {"alert": 100, "claude_wait": 80, "timer": 60, "claude": 50, "download": 40, "print": 35, "music": 30,
             "caps": 20}
 
@@ -241,6 +242,28 @@ class App(QObject):
         self.on_live()
 
     def current_live(self):
+        lives = self.live_list()
+        if lives:
+            return lives[0]
+        if any(self.privacy) and self.settings.get("live.privacy", True):
+            mic, cam = self.privacy
+            what = "Камера и микрофон" if mic and cam else ("Камера" if cam else "Микрофон")
+            return {"kind": "privacy", "glyph": "\uE722" if cam else "\uE720", "title": what,
+                    "sub": _app_name((cam or mic)[0])}
+        if self.sys.caps and self.settings.get("live.caps", True):
+            return {"kind": "alert", "glyph": "\uE752", "title": "Caps Lock"}
+        return None
+
+    def second_live(self):
+        """A second long-running activity (printing while music plays…), shown in a small bubble next to
+        the pill. Short alerts never go there."""
+        if not self.settings.get("live.split", True):
+            return None
+        rest = [x for x in self.live_list()[1:] if x["kind"] in BUBBLE_KINDS]
+        return rest[0] if rest else None
+
+    def live_list(self):
+        """Live activities, most important first."""
         live = dict(self.activities)
         st = self.media.state
         if st.get("active") and self.settings.get("live.music", True) and (st.get("playing") or "music" in live):
@@ -259,17 +282,7 @@ class App(QObject):
             live["timer"] = {"kind": "timer", "title": self.timer.label or "Таймер", "value": self.timer.display(),
                              "progress": self.timer.progress(), "running": self.timer.running,
                              "action": lambda: self.island.expand("timer")}
-        if not live:
-            if any(self.privacy) and self.settings.get("live.privacy", True):
-                mic, cam = self.privacy
-                what = "Камера и микрофон" if mic and cam else ("Камера" if cam else "Микрофон")
-                return {"kind": "privacy", "glyph": "" if cam else "", "title": what,
-                        "sub": _app_name((cam or mic)[0])}
-            if self.sys.caps and self.settings.get("live.caps", True):
-                return {"kind": "alert", "glyph": "", "title": "Caps Lock"}
-            return None
-        key = max(live, key=lambda k: PRIORITY.get(k, 0))
-        return live[key]
+        return [live[k] for k in sorted(live, key=lambda k: -PRIORITY.get(k, 0))]
 
     def on_live(self):
         if hasattr(self, "island"):

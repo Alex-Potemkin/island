@@ -505,7 +505,7 @@ class SettingsPage(Page):
         live = self.app.settings.get("live", {})
         opts = [("music", "Музыка"), ("timer", "Таймер"), ("layout", "Раскладка"), ("caps", "Caps Lock"),
                 ("privacy", "Микрофон и камера"), ("downloads", "Загрузки"), ("claude", "Claude Code"),
-                ("print", "3D-печать")]
+                ("print", "3D-печать"), ("split", "Два события сразу")]
         f.add(chip_grid(opts, [k for k, _t in opts if live.get(k, True)],
                         lambda keys: self.app.set_setting("live", {k: k in keys for k, _t in opts})))
         f.add(hbox("stretch", button("Вернуть как было", "ghost", lambda: self.app.apply_preset("full"))))
