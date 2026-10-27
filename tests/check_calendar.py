@@ -12,7 +12,7 @@ import wave
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["ISLAND_HOME"] = tempfile.mkdtemp(prefix="island-cal-")
 
-from PySide6.QtCore import QPointF, QTimer  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from island_app import integrations, sounds  # noqa: E402
