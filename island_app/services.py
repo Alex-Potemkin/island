@@ -341,8 +341,127 @@ def _linux_ocr_png(png_bytes, done, failed):
     bridge.run_thread(work, done, failed)
 
 
+class _MacMedia(_LinuxMedia):
+    """Now playing on macOS: Spotify and Music asked through AppleScript (the system-wide now-playing
+    info is closed to other apps since macOS 15.4). Polled every 2 s (4 s in economy mode)."""
+    SEP = "\x1f"
+
+    def __init__(self):
+        QObject.__init__(self)
+        self.state = {"active": False}
+        self._art_key = None
+        self._art = b""
+        self._busy = False
+        self._timer = perf.timer(QTimer(self, timeout=self.poll), 2000, 4000)
+        self._timer.start()
+        self.poll()
+
+    @staticmethod
+    def _script():
+        parts = []
+        apps = [("Spotify", "com.spotify.client", "(duration of current track) / 1000", "artwork url of current track")]
+        if not any(os.path.exists(p) for p in ("/Applications/Spotify.app",
+                                               os.path.expanduser("~/Applications/Spotify.app"))):
+            apps = []          # never name an app that isn't installed: osascript would ask where it is
+        apps.append(("Music", "com.apple.Music", "duration of current track", '""'))
+        for name, bid, dur, art in apps:
+            parts.append(f'''
+if application id "{bid}" is running then
+  tell application id "{bid}"
+    if player state is playing or player state is paused then
+      set out to "{name}" & s & (player state as text) & s & (name of current track) & s & (artist of current track) & s & (album of current track) & s & (player position as text) & s & ({dur} as text) & s & {art}
+      if player state is playing then return out
+      if fallback is "" then set fallback to out
+    end if
+  end tell
+end if''')
+        return 'set s to (character id 31)\nset fallback to ""\n' + "\n".join(parts) + "\nreturn fallback"
+
+    def _read(self):
+        out = osapi.osascript(self._script(), 4)
+        parts = out.split(self.SEP)
+        if len(parts) < 8:
+            return {"active": False}
+        player, status, title, artist, album, pos, dur, art = parts[:8]
+        osapi.last_player = player
+        st = {"active": True, "title": title, "artist": artist, "album": album, "playing": status == "playing",
+              "app": player, "position": _num(pos.replace(",", ".")), "duration": _num(dur.replace(",", ".")),
+              "stamp": time.time()}
+        key = (title, artist, album)
+        if key != self._art_key:
+            self._art_key = key
+            self._art = _fetch_art(art) if art else b""
+        st["art"] = self._art
+        return st
+
+    def _control(self, key):
+        osapi.media(key)
+        QTimer.singleShot(400, self.poll)
+
+
+class _MacRadios(_LinuxRadios):
+    """Wi-Fi through networksetup, Bluetooth through blueutil (Homebrew) if it is installed."""
+    _device = None
+
+    @classmethod
+    def _wifi_device(cls):
+        if cls._device is None:
+            lines = osapi.run(["networksetup", "-listallhardwareports"], 3).splitlines()
+            cls._device = ""
+            for i, line in enumerate(lines):
+                if line.strip() in ("Hardware Port: Wi-Fi", "Hardware Port: AirPort") and i + 1 < len(lines):
+                    cls._device = lines[i + 1].split(":", 1)[1].strip()
+        return cls._device
+
+    @classmethod
+    def _read(cls):
+        st = {}
+        dev = cls._wifi_device()
+        if dev:
+            v = osapi.run(["networksetup", "-getairportpower", dev], 3)
+            if v:
+                st[RADIO_WIFI] = v.rstrip().endswith("On")
+        bt = osapi.run(["blueutil", "-p"], 2)
+        if bt in ("0", "1"):
+            st[RADIO_BT] = bt == "1"
+        return st
+
+    def set(self, kind, on):
+        def work():
+            if kind == RADIO_WIFI and self._wifi_device():
+                osapi.run(["networksetup", "-setairportpower", self._wifi_device(), "on" if on else "off"], 6)
+            elif kind == RADIO_BT:
+                osapi.run(["blueutil", "-p", "1" if on else "0"], 5)
+            time.sleep(0.5)
+            return self._read()
+        bridge.run_thread(work, self._set, lambda _e: self.refresh())
+
+
+def _mac_ocr_png(png_bytes, done, failed):
+    """Apple's Vision text recognition (Russian since macOS 13), on a worker thread."""
+    def work():
+        import Vision
+        from Foundation import NSData
+        data = NSData.dataWithBytes_length_(bytes(png_bytes), len(png_bytes))
+        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(0)                     # accurate
+        req.setUsesLanguageCorrection_(True)
+        try:
+            req.setRecognitionLanguages_(["ru-RU", "en-US"])
+        except Exception:  # noqa: BLE001 - older macOS without Russian: English only
+            pass
+        ok, err = handler.performRequests_error_([req], None)
+        if not ok:
+            raise RuntimeError(str(err))
+        return "\n".join(str(o.topCandidates_(1)[0].string()) for o in (req.results() or []))
+    bridge.run_thread(work, done, failed)
+
+
 if sys.platform == "win32":
     Media, Radios, ocr_png = _WinMedia, _WinRadios, _win_ocr_png
+elif sys.platform == "darwin":
+    Media, Radios, ocr_png = _MacMedia, _MacRadios, _mac_ocr_png
 else:
     Media, Radios, ocr_png = _LinuxMedia, _LinuxRadios, _linux_ocr_png
 
@@ -647,9 +766,29 @@ def png_bytes(qimage):
     return bytes(buf.data())
 
 
+def _find_zbar_on_mac():
+    """pyzbar looks for libzbar with ctypes.util.find_library, which misses Homebrew on Apple Silicon
+    (/opt/homebrew) and the copy bundled inside Island.app."""
+    import ctypes.util
+    if getattr(ctypes.util, "_island_zbar", False):
+        return
+    base = getattr(sys, "_MEIPASS", "")
+    candidates = [os.path.join(base, n) for n in ("libzbar.dylib", "libzbar.0.dylib")] if base else []
+    candidates += ["/opt/homebrew/lib/libzbar.dylib", "/usr/local/lib/libzbar.dylib"]
+    found = next((c for c in candidates if os.path.exists(c)), None)
+    original = ctypes.util.find_library
+
+    def find_library(name):
+        return found if name == "zbar" and found else original(name)
+    ctypes.util.find_library = find_library
+    ctypes.util._island_zbar = True
+
+
 def decode_qr(qimage):
     """All QR/barcode payloads found in the image."""
     from PIL import Image
+    if sys.platform == "darwin":
+        _find_zbar_on_mac()
     from pyzbar import pyzbar
     img = Image.open(io.BytesIO(png_bytes(qimage))).convert("L")
     found = []

@@ -208,7 +208,7 @@ def _play_path(path):
         import winsound
         winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         return
-    for cmd in (["pw-play", path], ["paplay", path], ["aplay", "-q", path]):
+    for cmd in (["afplay", path], ["pw-play", path], ["paplay", path], ["aplay", "-q", path]):
         if shutil.which(cmd[0]):
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             return

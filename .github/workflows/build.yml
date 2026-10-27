@@ -1,6 +1,6 @@
 name: CI / CD
 
-# push to main  -> lint, tests on Linux and Windows, both binaries built and smoke-tested,
+# push to main  -> lint, tests on Linux, Windows and macOS (Apple Silicon + Intel), every build smoke-tested,
 #                  published as the rolling "nightly" pre-release
 # tag v1.2.3    -> the same, then a GitHub release "Island 1.2.3" with notes, binaries and SHA256SUMS
 # pull request  -> lint, tests and builds only (binaries as workflow artifacts)
@@ -167,8 +167,74 @@ jobs:
           path: ci-shots/
           retention-days: 7
 
+  macos:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15          # Apple Silicon
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      ISLAND_VERSION: ${{ needs.lint.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: System and Python packages
+        run: |
+          brew install zbar
+          python -m pip install -r requirements.txt
+
+      - name: Tests
+        timeout-minutes: 15
+        run: |
+          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk; do
+            echo "::group::$t"
+            ISLAND_HOME=$(mktemp -d) python tests/$t.py
+            echo "::endgroup::"
+          done
+
+      - name: Demo run with screenshots (from source)
+        timeout-minutes: 6
+        run: |
+          export ISLAND_HOME=$(mktemp -d)
+          python main.py --demo --exit --out ci-shots/source
+          test "$(ls ci-shots/source | wc -l)" -ge 40
+
+      - name: Build Island.app and the .dmg
+        run: python build_exe.py
+
+      - name: Test the app
+        timeout-minutes: 6
+        run: |
+          export ISLAND_HOME=$(mktemp -d)
+          ./Island.app/Contents/MacOS/Island --demo --exit --out ci-shots/binary
+          test "$(ls ci-shots/binary | wc -l)" -ge 40
+          test -f "$ISLAND_HOME/data.json"
+          codesign --verify --deep --strict Island.app
+          hdiutil imageinfo "Island-macos-${{ matrix.arch }}.dmg" > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Island-macos-${{ matrix.arch }}
+          path: Island-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-macos-${{ matrix.arch }}
+          path: ci-shots/
+          retention-days: 7
+
   publish:
-    needs: [lint, linux, windows]
+    needs: [lint, linux, windows, macos]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
@@ -187,7 +253,7 @@ jobs:
         working-directory: dist
         run: |
           chmod +x Island-linux-x86_64
-          sha256sum Island.exe Island-linux-x86_64 > SHA256SUMS.txt
+          sha256sum Island.exe Island-linux-x86_64 Island-macos-*.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Release

@@ -346,7 +346,7 @@ class Index(QObject):
         bridge.run_thread(self._build, lambda _r: self.ready.emit())
 
     def _build(self):
-        apps = _windows_apps() if osapi.IS_WINDOWS else _linux_apps()
+        apps = _windows_apps() if osapi.IS_WINDOWS else (_mac_apps() if osapi.IS_MAC else _linux_apps())
         files = []
         home = os.path.expanduser("~")
         bases = [osapi.user_dir(k) for k in ("desktop", "documents", "download", "pictures", "music", "videos")]
@@ -421,6 +421,23 @@ def _windows_apps():
                     apps[name.lower()] = (name, appid.strip(), "appid")
     except (OSError, subprocess.SubprocessError):
         pass
+    return apps
+
+
+def _mac_apps():
+    """.app bundles in the Applications folders (one level of sub-folders, like Utilities)."""
+    apps = {}
+    roots = ["/Applications", "/System/Applications", os.path.expanduser("~/Applications")]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            path = os.path.join(root, name)
+            subs = [path] if name.endswith(".app") else (
+                [os.path.join(path, n) for n in os.listdir(path) if n.endswith(".app")] if os.path.isdir(path) else [])
+            for app in subs:
+                title = os.path.basename(app)[:-4]
+                apps.setdefault(title.lower(), (title, app, "lnk"))
     return apps
 
 

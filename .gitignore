@@ -4,6 +4,8 @@ __pycache__/
 *.exe
 *.spec
 Island-linux-*
+Island.app/
+Island-macos-*.dmg
 ci-shots/
 island_app/_version.py
 dist-release/
