@@ -3,7 +3,7 @@ import json
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractButton, QComboBox, QGridLayout, QHBoxLayout, QLineEdit, QScrollArea,
+from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLineEdit, QScrollArea,
                                QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import config, layout, osapi
@@ -323,6 +323,19 @@ class SettingsPage(Page):
                 lambda v, i=i: self.stack.currentIndex() == i and self.app.ui_state.__setitem__("settings_scroll", v))
         return self.scrolls[i]
 
+    def layout_changed(self):
+        """A preset or the builder changed the layout: sections other than the open one show old
+        values, so they are built again when visited."""
+        cur = self.stack.currentIndex()
+        for i, scroll in enumerate(self.scrolls):
+            if scroll is not None and i != cur:
+                ph = QWidget()
+                self.stack.insertWidget(i, ph)
+                self.stack.removeWidget(scroll)
+                scroll.deleteLater()
+                self.scrolls[i] = None
+        self.stack.setCurrentIndex(cur)
+
     def _section(self, i):
         for j, chip in enumerate(getattr(self, "section_chips", [])):
             chip.setChecked(j == i)
@@ -341,12 +354,14 @@ class SettingsPage(Page):
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(W.T.s(8))
+        gw = QWidget()
+        group = QButtonGroup(gw)     # one preset at a time, without rebuilding the page
         for i, (key, p) in enumerate(layout.PRESETS.items()):
             pc = PresetCard(p["title"], p["text"])
+            group.addButton(pc)
             pc.setChecked(key == current)
             pc.clicked.connect(lambda _=False, k=key: self.app.apply_preset(k))
             grid.addWidget(pc, 0, i)
-        gw = QWidget()
         gw.setLayout(grid)
         f.add(gw)
 
@@ -387,27 +402,31 @@ class SettingsPage(Page):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(W.T.s(8))
         cards = []
+        gw = QWidget()
+        group = QButtonGroup(gw)     # one theme at a time, without rebuilding the page
         options = [(k, title, pal) for k, (title, pal) in TH.THEMES.items()] + [("system", "Как в системе", None)]
         for i, (key, title, pal) in enumerate(options):
             tc = ThemeCard(key, title, pal)
             tc.setChecked(s.get("theme", "dark") == key)
             tc.clicked.connect(lambda _=False, k=key: self.app.set_setting("theme", k, rebuild=True))
             cards.append(tc)
+            group.addButton(tc)
             grid.addWidget(tc, i // 4, i % 4)
         grid.setColumnStretch(4, 1)
-        gw = QWidget()
         gw.setLayout(grid)
         f.add(gw)
 
         dots = QHBoxLayout()
         dots.setContentsMargins(0, 0, 0, 0)
         dots.setSpacing(W.T.s(2))
+        dw = QWidget()
+        dgroup = QButtonGroup(dw)
         for key, (title, color) in TH.ACCENTS.items():
             d = AccentDot(title, color, self.T.c["fg"])
+            dgroup.addButton(d)
             d.setChecked(a["accent"] == key)
             d.clicked.connect(lambda _=False, k=key: self.app.set_appearance(accent=k))
             dots.addWidget(d)
-        dw = QWidget()
         dw.setLayout(dots)
         f.row("Акцент", "Цвет выбранной вкладки, переключателей и кнопок", dw)
 
@@ -453,7 +472,7 @@ class SettingsPage(Page):
         self.app.settings.set("scale", 100, save=False)
         self.app.settings.set("top_offset", 6, save=False)
         self.app.settings.set("appearance", dict(TH.APPEARANCE))
-        QTimer.singleShot(30, self.app.rebuild)
+        QTimer.singleShot(30, self.app.rebuild)       # the sliders and chips on this page show old values
 
     def _toggle(self, path, rebuild=False):
         t = W.Toggle(bool(self.app.settings.get(path)))
@@ -571,11 +590,15 @@ class SettingsPage(Page):
             f.add(label("Отключить для приложений:", "faint"))
             f.add(chip_grid([(a, a) for a in seen], [a for a in seen if a in muted],
                             lambda keys: put("muted_apps", list(keys)), cols=5))
-        if osapi.IS_WINDOWS:
-            f.add(hbox(label("Чтобы Windows не показывала свой баннер вдобавок к пилюле, выключите баннеры "
-                             "в параметрах уведомлений.", "faint", wrap=True),
-                       button("Открыть параметры", "ghost", lambda: osapi.open_path("ms-settings:notifications")),
-                       spacing=6))
+        if osapi.CAN_SILENCE_BANNERS:
+            sn = self.app.system_notifications
+            prim = W.Toggle(sn.primary)
+            prim.toggled.connect(sn.set_primary)
+            f.row("Island — главный центр уведомлений",
+                  "Всплывающие баннеры Windows выключаются для всех приложений, уведомления приходят "
+                  "только в пилюлю и во вкладку «Уведомления». Выключите — и всё вернётся как было.", prim)
+            f.add(hbox("stretch", button("Параметры уведомлений Windows", "ghost",
+                                         lambda: osapi.open_path("ms-settings:notifications")), spacing=6))
 
         f.title("Календарь")
         f.row("Напоминать о событии", "", chip_group([("0", "в момент начала"), ("5", "за 5 мин"), ("10", "за 10"),

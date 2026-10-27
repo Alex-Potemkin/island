@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import bridge, config, perf
+from . import bridge, config, osapi, perf
 
 LOCAL_TZ = dt.datetime.now().astimezone().tzinfo
 
@@ -624,6 +624,16 @@ def read_windows_toasts(db_path, after_id):
     return max(top, after_id), out
 
 
+def windows_notifying_apps(db_path):
+    """App ids (AUMIDs) Windows keeps notification settings for, without Island itself."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+    try:
+        rows = con.execute("SELECT PrimaryId FROM NotificationHandler").fetchall()
+    finally:
+        con.close()
+    return sorted({r[0] for r in rows if r[0] and not any(o in r[0].lower() for o in _OWN)})
+
+
 def parse_dbus_notify(lines):
     """Notify() calls from `dbus-monitor` output: [(app, summary, body)]."""
     out, cur = [], None
@@ -660,7 +670,10 @@ class SystemNotifications(QObject):
         self.available = bool(WPN_DB and os.path.exists(WPN_DB)) or bool(shutil.which("dbus-monitor"))
         self._timer = perf.timer(QTimer(self, timeout=self.poll), 1500, 4000)
         self._timer.start()
+        self._new_apps = perf.timer(QTimer(self, timeout=self._silence_new), 60 * 1000, 120 * 1000)
+        self._new_apps.start()
         self.poll()
+        QTimer.singleShot(4000, self._silence_new)
 
     @property
     def enabled(self):
@@ -668,6 +681,49 @@ class SystemNotifications(QObject):
 
     def muted(self):
         return set(self.settings.get("notifications.muted_apps") or [])
+
+    # ---- Island as the main notification centre: Windows banners off, everything shows in the pill
+    @property
+    def primary(self):
+        return bool(self.settings.get("notifications.primary")) and osapi.CAN_SILENCE_BANNERS
+
+    def _backup(self):
+        b = self.settings.get("notifications.banners_backup")
+        return dict(b) if isinstance(b, dict) else {}
+
+    def set_primary(self, on):
+        """on: hide Windows' own banners for every app (remembering what was set); off: put them back."""
+        self.settings.set("notifications.primary", bool(on))
+        if on:
+            self.settings.set("notifications.apps", True)
+            self.poll()
+            self._silence_new()
+        else:
+            for app_id, prev in self._backup().items():
+                try:
+                    osapi.set_banner(app_id, prev)
+                except OSError:
+                    pass
+            self.settings.set("notifications.banners_backup", {})
+
+    def _silence_new(self):
+        """Hide banners of apps not handled yet (also apps that start notifying later)."""
+        if not self.primary or not WPN_DB or not os.path.exists(WPN_DB):
+            return
+        backup = self._backup()
+        try:
+            ids = windows_notifying_apps(WPN_DB)
+        except sqlite3.Error:
+            return
+        new = [i for i in ids if i not in backup]
+        for app_id in new:
+            try:
+                backup[app_id] = osapi.get_banner(app_id)
+                osapi.set_banner(app_id, 0)
+            except OSError:
+                backup.pop(app_id, None)
+        if new:
+            self.settings.set("notifications.banners_backup", backup)
 
     def _deliver(self, items):
         self._busy = False

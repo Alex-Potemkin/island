@@ -54,22 +54,14 @@ class Panel(QWidget):
         self.pages = {}
         self.stack = QStackedWidget()
         self.tabs = {}
-        self.tab_keys = layout.current(app.settings)["tabs"] + ["settings"]
-        tabrow = QHBoxLayout()
-        tabrow.setContentsMargins(0, 0, 0, 0)
-        tabrow.setSpacing(T.s(2))
-        for key in self.tab_keys:
-            if key == "settings":
-                tabrow.addStretch(1)
-            glyph, title = (layout.TABS[key][:2] if key in layout.TABS else ("\uE713", "Настройки"))
-            b = TabButton(glyph, title)
-            b.clicked.connect(lambda _=False, k=key: island.show_page(k))
-            self.tabs[key] = b
-            tabrow.addWidget(b)
+        self.current = None
+        self.tabrow = QHBoxLayout()
+        self.tabrow.setContentsMargins(0, 0, 0, 0)
+        self.tabrow.setSpacing(T.s(2))
         self.pin = IconButton("\uE718", "Не сворачивать", 30, 13, checkable=True)
-        tabrow.addWidget(self.pin)
+        self._make_tabs()
         self.tabbar = QWidget()
-        self.tabbar.setLayout(tabrow)
+        self.tabbar.setLayout(self.tabrow)
         lay = QVBoxLayout(self)
         m = T.s(16)
         lay.setContentsMargins(m, T.s(12), m, m)
@@ -81,6 +73,41 @@ class Panel(QWidget):
         self.setGraphicsEffect(self.effect)
         self.current = None
         self.command = self.page("command")
+
+    def _make_tabs(self):
+        while self.tabrow.count():
+            w = self.tabrow.takeAt(0).widget()
+            if w is not None and w is not self.pin:
+                w.hide()
+                w.deleteLater()
+        self.tabs = {}
+        self.tab_keys = layout.current(self.island.app.settings)["tabs"] + ["settings"]
+        for key in self.tab_keys:
+            if key == "settings":
+                self.tabrow.addStretch(1)
+            glyph, title = (layout.TABS[key][:2] if key in layout.TABS else ("\uE713", "Настройки"))
+            b = TabButton(glyph, title)
+            b.clicked.connect(lambda _=False, k=key: self.island.show_page(k))
+            b.setChecked(self.current is not None and self.current.key == key)
+            self.tabs[key] = b
+            self.tabrow.addWidget(b)
+        self.tabrow.addWidget(self.pin)
+
+    def rebuild_layout(self):
+        """The layout changed: new tab bar; cached pages (home…) are rebuilt on next use. The page on
+        screen (usually Settings) stays as it is."""
+        for key, p in list(self.pages.items()):
+            if p is self.current or key == "command":
+                continue
+            p.teardown()
+            self.stack.removeWidget(p)
+            p.hide()
+            p.deleteLater()
+            del self.pages[key]
+        self._make_tabs()
+        if self.current is not None and hasattr(self.current, "layout_changed"):
+            self.current.layout_changed()
+        self.island.relayout()
 
     def page(self, key):
         """The page for key, created on first use."""
@@ -236,6 +263,21 @@ class Island(QWidget):
             self._anim.start()
         self._update_live_anim()
 
+    def restyle(self):
+        """The theme objects were updated in place: new spring stiffness, position, repaint."""
+        k = self.T.stiffness or 420.0
+        for name, sp in self.springs.items():
+            if name != "o":
+                sp.k, sp.c = k, 2 * math.sqrt(k) * 0.78
+        self.place()
+        self._last_live = None
+        if self.mode != "expanded":
+            self.mode = self.resting_mode()
+        self.retarget()
+        for w in self.findChildren(QWidget):
+            w.update()
+        self.update()
+
     def relayout(self):
         if self.mode == "expanded":
             self.retarget()
@@ -319,7 +361,7 @@ class Island(QWidget):
             self.paint_toast(p, r)
 
     def _clock_tick(self):
-        if self.mode == "idle" and self.idle_text():
+        if self.mode == "idle" and (self.idle_text() or self.app.notifications.unread):
             if abs(self.springs["w"].target - self.idle_width()) > 1:
                 self.retarget()
             self.update()
@@ -364,9 +406,34 @@ class Island(QWidget):
 
     def idle_width(self):
         text = self.idle_text()
+        badge = self._badge_width()
         if not text:
-            return self.P.s(124)
-        return max(self.P.s(124), QFontMetrics(self.P.tabular(13)).horizontalAdvance(text) + self.P.s(44))
+            return self.P.s(124) + badge
+        return max(self.P.s(124), QFontMetrics(self.P.tabular(13)).horizontalAdvance(text) + self.P.s(44)) + badge
+
+    def _badge_text(self):
+        n = self.app.notifications.unread
+        return "" if not n else (str(n) if n < 100 else "99+")
+
+    def _badge_width(self):
+        t = self._badge_text()
+        return self.P.s(14) + QFontMetrics(self.P.font(10.5, 700)).horizontalAdvance(t) + self.P.s(8) if t else 0
+
+    def _paint_badge(self, p, r):
+        """Unread notifications: a small counter on the right of the resting pill."""
+        T = self.P
+        t = self._badge_text()
+        if not t:
+            return
+        p.setFont(T.font(10.5, 700))
+        w = max(T.s(18), p.fontMetrics().horizontalAdvance(t) + T.s(10))
+        h = T.s(18)
+        box = QRectF(r.right() - T.s(8) - w, r.center().y() - h / 2, w, h)
+        p.setPen(Qt.NoPen)
+        p.setBrush(T.col("inv_bg") if not T.dark else T.col("fg"))
+        p.drawRoundedRect(box, h / 2, h / 2)
+        p.setPen(T.col("inv_fg") if not T.dark else T.col("bg"))
+        p.drawText(box, Qt.AlignCenter, t)
 
     def _dots_width(self):
         st = self.app.privacy
@@ -399,10 +466,12 @@ class Island(QWidget):
             getattr(self, "_live_" + live["kind"], self._live_alert)(p, r, live, right)
         elif self.mode == "idle":
             text = self.idle_text()
+            badge = self._badge_width()
             if text:
                 p.setFont(T.tabular(13))
                 p.setPen(T.col("fg"))
-                p.drawText(r, Qt.AlignCenter, text)
+                p.drawText(r.adjusted(0, 0, -badge, 0), Qt.AlignCenter, text)
+            self._paint_badge(p, r)
         p.restore()
 
     def _icon(self, p, rect, glyph, color="fg", px=15):

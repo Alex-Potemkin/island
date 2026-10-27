@@ -24,11 +24,16 @@ with open(os.path.join(HOME, "settings.json"), "w", encoding="utf-8") as f:
                           "quick": ["screenshot"], "idle": "empty"}}, f)
 
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QAbstractButton, QApplication  # noqa: E402
 
 from island_app import devices  # noqa: E402
 
 results = []
+
+
+def shiboken_deleted(obj):
+    import shiboken6
+    return not shiboken6.isValid(obj)
 
 
 def check(name, ok, info=""):
@@ -367,6 +372,140 @@ def main():
     step(900, deskdash_transfer)
     step(900, home_cards)
     step(3500, deskdash_offline)        # Windows reports a refused local connection after ~2 s
+
+    # ---- settings apply in place
+    live = {}
+
+    def live_open():
+        app.open_settings("look")
+        live["island"], live["page"] = app.island, app.island.panel.page("settings")
+        live["toggle"] = live["page"].findChildren(QAbstractButton)[0]
+        app.set_appearance(accent="blue", corners="round", shadow=False, pill="small")
+        app.set_setting("theme", "midnight", rebuild=True)
+
+    def live_check():
+        isl = app.island
+        check("theme and look change without a new window", isl is live["island"] and isl.mode == "expanded"
+              and isl.panel.page("settings") is live["page"])
+        check("…and they are applied", app.theme.key == "midnight" and app.theme.a["accent"] == "blue"
+              and app.pill_theme.k < app.theme.k and not app.theme.shadow)
+        check("the settings widgets stay alive", not shiboken_deleted(live["toggle"]))
+        app.set_setting("top_offset", 12, rebuild=True)
+        app.set_setting("performance", "eco", rebuild=True)
+        app.set_layout(tabs=["home", "notes", "inbox", "printer"])
+
+    def live_layout():
+        isl = app.island
+        check("offset, performance, layout: still the same window", isl is live["island"]
+              and isl.panel.page("settings") is live["page"])
+        check("tab bar rebuilt in place", list(isl.panel.tabs) == ["home", "notes", "inbox", "printer", "settings"],
+              list(isl.panel.tabs))
+        check("settings tab still selected", isl.panel.tabs["settings"].isChecked())
+        app.set_setting("performance", "normal", rebuild=True)
+        app.set_setting("scale", 110, rebuild=True)
+
+    def live_scale():
+        isl = app.island
+        check("scale: new window opens already expanded on the same page",
+              isl is not live["island"] and isl.mode == "expanded" and isl.panel.current.key == "settings")
+        app.set_setting("scale", 90, rebuild=True)
+
+    # ---- Bambu Studio and printer discovery
+    def bambu_studio():
+        app.island.collapse()
+        appdata = tempfile.mkdtemp(prefix="appdata-")
+        os.makedirs(os.path.join(appdata, "BambuStudio"))
+        with open(os.path.join(appdata, "BambuStudio", "BambuStudio.conf"), "w", encoding="utf-8") as f:
+            f.write("# Bambu Studio config\n" + json.dumps({"access_code": {"01p00c000000009": "87654321"},
+                                                           "app": {"user_last_selected_machine": "x"}}))
+        saved = os.environ.get("APPDATA"), os.environ.get("XDG_CONFIG_HOME")
+        os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"] = appdata
+        try:
+            check("access code read from Bambu Studio", devices.bambu_studio_codes() == {"01P00C000000009": "87654321"})
+        finally:
+            for k, v in zip(("APPDATA", "XDG_CONFIG_HOME"), saved):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        lines = ["NOTIFY * HTTP/1.1", "HOST: 239.255.255.250:1990", "Location: 192.168.7.42",
+                 "NT: urn:bambulab-com:device:3dprinter:1", "USN: 01P00C000000009", "NTS: ssdp:alive",
+                 "DevModel.bambu.com: C12", "DevName.bambu.com: andromeda", "", ""]
+        notify = bytes([13, 10]).join(x.encode() for x in lines)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:   # Bambu Studio may hold 2021
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        devices.SSDP_PORTS = (port,)
+
+        def announce():
+            for _ in range(8):
+                time.sleep(0.25)
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.sendto(notify, ("127.0.0.1", port))
+        threading.Thread(target=announce, daemon=True).start()
+        found = devices.discover_bambu(3)
+        check("printer found on the network (SSDP)", any(p["serial"] == "01P00C000000009" and p["ip"] == "192.168.7.42"
+                                                      and p["name"] == "andromeda" and p["model"] == "P1S"
+                                                      for p in found), found)
+
+    # ---- Island as the main notification centre
+    def primary():
+        from island_app import integrations, osapi
+        reg = {"Telegram.Desktop": None, "Microsoft.Office.OUTLOOK.EXE.15": 1}
+        osapi.get_banner = lambda i: reg.get(i)
+        osapi.set_banner = lambda i, v: reg.__setitem__(i, v)
+        osapi.CAN_SILENCE_BANNERS = True
+        db = os.path.join(HOME, "wpn.db")
+        open(db, "wb").close()
+        integrations.WPN_DB = db
+        integrations.windows_notifying_apps = lambda _p: sorted(reg)
+        sn = app.system_notifications
+        sn._timer.stop()
+        sn.poll = lambda: None
+        sn.set_primary(True)
+        check("main centre: Windows banners off for every app", reg == {"Telegram.Desktop": 0,
+                                                                    "Microsoft.Office.OUTLOOK.EXE.15": 0}, reg)
+        check("previous values remembered", app.settings.get("notifications.banners_backup") ==
+              {"Telegram.Desktop": None, "Microsoft.Office.OUTLOOK.EXE.15": 1})
+        reg["Discord"] = None                      # an app that starts notifying later
+        sn._silence_new()
+        check("new apps get silenced too", reg["Discord"] == 0)
+        sn.set_primary(False)
+        check("turning it off puts everything back", reg == {"Telegram.Desktop": None,
+                                                             "Microsoft.Office.OUTLOOK.EXE.15": 1, "Discord": None}, reg)
+
+    def unread():
+        isl = app.island
+        isl.collapse()
+        app.notifications.clear()
+        app.settings.set("notifications.style", "off")
+        w0 = isl.idle_width()
+        for i in range(3):
+            app.notifications.push("apps", f"Сообщение {i}", "текст", app="Telegram")
+        app.notifications.push("github", "PR", "review requested")
+        check("unread counter on the resting pill", app.notifications.unread == 4 and isl.idle_width() > w0)
+        app.clear_alert()          # "hotkey taken": the real Island on this PC holds them
+        shot("pill_unread")
+        isl.expand("inbox")
+        page = isl.panel.page("inbox")
+        check("opening the notifications tab marks them read", app.notifications.unread == 0)
+        page._set_filter("Telegram")
+        check("filter by app", len(page.items) == 3)
+        page._remove(page.items[0])
+        check("remove one", len(page.items) == 2 and len(app.notifications.history) == 3)
+        page._clear()
+        check("clear clears only the filtered app", [n["source"] for n in app.notifications.history] == ["github"])
+        shot("inbox")
+        isl.collapse()
+
+    step(300, live_open)
+    step(700, live_check)
+    step(900, live_layout)
+    step(900, live_scale)
+    step(800, bambu_studio)
+    step(200, primary)
+    step(200, unread)
 
     def run(i=0):
         if i >= len(steps):

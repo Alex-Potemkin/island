@@ -156,6 +156,10 @@ def main():
     from island_app.app import App
     app = App(qapp, ["--demo"])
     app.hard_exit = False
+    app.sys.download_finished.disconnect()     # real downloads on this PC must not add cards
+    app.sys.downloads_changed.disconnect()
+    app.system_notifications.stop()
+    app.system_notifications._timer.stop()
     opened = []
     import webbrowser
     webbrowser.open = lambda url, *a, **k: opened.append(url) or True

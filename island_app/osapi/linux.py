@@ -58,6 +58,7 @@ def _first(*cmds):
 
 CAN_PASTE = have("xdotool") or have("wtype")
 CAN_SET_DARK = have("gsettings")
+CAN_SILENCE_BANNERS = False   # the desktop's notification daemon shows its own pop-ups
 
 # ---------------------------------------------------------------- windows and focus
 
@@ -339,3 +340,11 @@ def get_brightness():
 
 def set_brightness(value):
     run(["brightnessctl", "set", f"{int(value)}%"])
+
+
+def get_banner(_app_id):
+    return None
+
+
+def set_banner(_app_id, _value):
+    pass

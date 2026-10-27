@@ -334,10 +334,11 @@ class PrinterPage(Page):
         ul = QVBoxLayout(su)
         ul.setContentsMargins(0, 0, 0, 0)
         ul.setSpacing(T.s(8))
-        ul.addWidget(label("Bambu Lab по локальной сети", "h2"))
-        ul.addWidget(label("На экране принтера: Настройки → Сеть (WLAN) — IP-адрес и код доступа (Access Code). "
-                           "Серийный номер: Настройки → Устройство или в Bambu Handy. Принтер и ПК — в одной сети.",
-                           "muted", wrap=True))
+        self.b_find = button("Найти принтер", "primary", self._find)
+        ul.addWidget(hbox(label("Bambu Lab по локальной сети", "h2"), "stretch", self.b_find, spacing=6))
+        ul.addWidget(label("«Найти принтер» ищет его в сети и берёт код доступа из Bambu Studio, если он там "
+                           "сохранён. Вручную: на экране принтера Настройки → Сеть (WLAN) — IP-адрес и код доступа, "
+                           "серийный номер — Настройки → Устройство.", "muted", wrap=True))
         cfg = pr.cfg()
         self.f_host, self.f_serial, self.f_code, self.f_name = QLineEdit(cfg["host"]), QLineEdit(cfg["serial"]), \
             QLineEdit(), QLineEdit(cfg["name"] if pr.configured else "")
@@ -387,6 +388,33 @@ class PrinterPage(Page):
         self.stack.setCurrentIndex(1 if on else 0)
         self.refresh()
         _relayout(self)
+
+    def _find(self):
+        self.b_find.setEnabled(False)
+        self.b_find.setText("Ищу…")
+        self.setup_msg.setText("Ищу принтеры в сети (до 6 секунд)…")
+        self.app.printer.find(self._found)
+
+    def _found(self, printers):
+        self.b_find.setEnabled(True)
+        self.b_find.setText("Найти принтер")
+        if not printers:
+            self.setup_msg.setText("Принтер в сети не найден. Он включён и в той же сети, что и ПК? "
+                                   "Введите IP-адрес вручную.")
+            return
+        p = next((x for x in printers if x["code"]), printers[0])
+        self.f_host.setText(p["ip"])
+        self.f_serial.setText(p["serial"])
+        self.f_name.setText(p["name"])
+        title = f"{p['name']} ({p['model'] + ', ' if p['model'] else ''}{p['ip']})"
+        if p["code"]:
+            self.app.printer.configure(p["ip"], p["serial"], p["code"], p["name"])
+            self.app.alert("", "Принтер подключён", title, ttl=2.5)
+            self.show_setup(False)
+        else:
+            self.setup_msg.setText(f"Найден {title}. Код доступа в Bambu Studio не сохранён — "
+                                   "введите его с экрана принтера (Настройки → Сеть).")
+            self.f_code.setFocus()
 
     def _save(self):
         host, serial = self.f_host.text().strip(), self.f_serial.text().strip()

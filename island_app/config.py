@@ -60,7 +60,8 @@ DEFAULTS = {
     "hooks": {"enabled": True, "port": 47811},
     "notifications": {"style": "card", "duration": 6, "sound": "drop", "volume": 70, "sound_file": "",
                       "event_lead": 10, "quiet": {"enabled": False, "from": 22, "to": 8}, "sources": {}, "sounds": {},
-                      "apps": True, "muted_apps": []},
+                      "apps": True, "muted_apps": [],
+                      "primary": False, "banners_backup": {}},   # Island instead of Windows' banners
     "accounts": {"google": {"client_id": "", "client_secret": "", "refresh": "", "email": ""},
                  "github": {"token": ""}, "ics": [],
                  "bambu": {"host": "", "serial": "", "code": "", "name": ""}},

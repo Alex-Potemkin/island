@@ -104,6 +104,8 @@ class App(QObject):
         qapp.installEventFilter(self)
         qapp.aboutToQuit.connect(self._shutdown)
         self._rebuild_timer = QTimer(self, singleShot=True, interval=450, timeout=self.rebuild)
+        self._style_timer = QTimer(self, singleShot=True, interval=40, timeout=self.restyle)
+        self._layout_timer = QTimer(self, singleShot=True, interval=350, timeout=self.relayout_panel)
         if not self.settings.get("onboarded") and not self.demo:
             QTimer.singleShot(700, self._welcome)
         if bool(self.settings.get("autostart")) != osapi.autostart_enabled():
@@ -127,18 +129,35 @@ class App(QObject):
         self.on_live()
 
     def rebuild(self):
-        """Theme/scale/screen changed: recreate the window, keep state."""
+        """The interface scale changed (sizes are baked into every widget): build a new window.
+        The new one opens already expanded on the same page before the old one goes, so nothing jumps."""
         perf.configure(self.settings)
-        page = self.island.page_key
-        expanded = self.island.mode == "expanded"
-        self.island.hide()
-        self.island.register_hotkeys({})
-        self.island.panel.teardown()
-        self.island.deleteLater()
+        old = self.island
+        page = old.panel.current.key if old.mode == "expanded" and old.panel.current else old.page_key
+        expanded = old.mode == "expanded"
+        old.register_hotkeys({})
+        old.panel.teardown()
         self.build_ui()
-        self.tray.setIcon(make_icon(64))
         if expanded:
             self.island.expand(page)
+            self.island.retarget(snap=True)
+        old.hide()
+        old.deleteLater()
+        self.tray.setIcon(make_icon(64))
+
+    def restyle(self):
+        """Theme, colours, corners, shadow, animation, font, pill size, position: applied in place."""
+        perf.configure(self.settings)
+        self.theme.__init__(self.settings)
+        self.pill_theme.__init__(self.settings, pill=True)
+        W.set_theme(self.theme)
+        self.qapp.setStyleSheet(self.theme.stylesheet())
+        self.island.restyle()
+
+    def relayout_panel(self):
+        """Tabs, home cards, quick buttons: rebuilt inside the open panel."""
+        self.island.panel.rebuild_layout()
+        self.island.live_changed()
 
     def make_tray(self):
         self.tray = QSystemTrayIcon(make_icon(64), self)
@@ -189,6 +208,7 @@ class App(QObject):
         self.timer.finished.connect(self._timer_finished)
         self.reminders.fired.connect(self._reminder_fired)
         self.printer.changed.connect(self.on_live)
+        self.notifications.changed.connect(self._unread_changed)
         self.deskdash.spotify_changed.connect(self.on_live)
         self.sys.layout_changed.connect(self._layout)
         self.sys.caps_changed.connect(self._caps)
@@ -204,9 +224,14 @@ class App(QObject):
         if path not in self.watcher.files():
             self.watcher.addPath(path)
         if self.settings.changed_on_disk() and self.settings.load():
-            QTimer.singleShot(50, self.rebuild)
+            QTimer.singleShot(50, self.rebuild)      # edited by hand: anything may have changed
 
     # ------------------------------------------------------------ live activities
+
+    def _unread_changed(self):
+        isl = getattr(self, "island", None)
+        if isl is not None and isl.mode == "idle":
+            isl.retarget()          # the unread counter changes the pill's width
 
     def _set_activity(self, key, value):
         if value is None:
@@ -373,14 +398,14 @@ class App(QObject):
         lay = layout.current(self.settings)
         lay.update(changes)
         self.settings.set("layout", lay)
-        self._rebuild_timer.start()
+        self._layout_timer.start()
 
     def apply_preset(self, key):
         lay = dict(layout.PRESETS[key]["layout"])
         lay["idle"] = layout.current(self.settings)["idle"]     # a preset doesn't change what the pill shows
         self.settings.set("layout", lay)
         self.alert("\uE7C4", "Набор «" + layout.PRESETS[key]["title"] + "»", ttl=1.6)
-        QTimer.singleShot(30, self.rebuild)
+        self.relayout_panel()
 
     def reset_settings(self):
         keep = {"ai": self.settings.get("ai"), "onboarded": True}
@@ -445,9 +470,14 @@ class App(QObject):
         self.island.panel.page("ai").ask(text, translate=True)
 
     def set_setting(self, path, value, rebuild=False):
+        """rebuild=True: the setting changes how the island looks. Only the interface scale needs a new
+        window; everything else is applied in place."""
         self.settings.set(path, value)
         if rebuild:
-            QTimer.singleShot(30, self.rebuild)
+            if path == "scale":
+                QTimer.singleShot(30, self.rebuild)
+            else:
+                self._style_timer.start()
         else:
             self.on_live()
             if path == "autohide":
@@ -484,7 +514,7 @@ class App(QObject):
         a = appearance(self.settings)
         a.update(changes)
         self.settings.set("appearance", a)
-        self._rebuild_timer.start()
+        self._style_timer.start()
 
     def toggle_visible(self):
         self.a_hide.setChecked(self.island.isVisible())

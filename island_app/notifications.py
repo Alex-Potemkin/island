@@ -41,6 +41,12 @@ class Notifications(QObject):
     def __init__(self, app):
         super().__init__()
         self.app = app
+        self.unread = 0           # since the notification tab was last opened; shown on the resting pill
+
+    def mark_read(self):
+        if self.unread:
+            self.unread = 0
+            self.changed.emit()
 
     @property
     def cfg(self):
@@ -86,6 +92,9 @@ class Notifications(QObject):
         self.history.insert(0, n)
         del self.history[100:]
         self.app.store.touch()
+        isl = getattr(self.app, "island", None)
+        if not (isl and isl.mode == "expanded" and isl.panel.current and isl.panel.current.key == "inbox"):
+            self.unread += 1
         self.changed.emit()
         style = self.style_for(source)
         silenced = (self.quiet_now() or self.app.settings.get("dnd")) and source not in IMPORTANT
@@ -112,5 +121,7 @@ class Notifications(QObject):
 
     def clear(self):
         self.history.clear()
+        self.unread = 0
         self.app.store.touch()
+        self.changed.emit()
         self.changed.emit()

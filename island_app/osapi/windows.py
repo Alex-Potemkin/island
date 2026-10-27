@@ -361,6 +361,7 @@ IS_WINDOWS = True
 HAS_GLOBAL_HOTKEYS = True
 CAN_PASTE = True
 CAN_SET_DARK = True
+CAN_SILENCE_BANNERS = True
 SETTINGS_LABEL = "Параметры Windows"
 TASKS_LABEL = "Диспетчер задач"
 AUTOSTART_LABEL = "Запускать с Windows"
@@ -535,3 +536,32 @@ def process_snapshot():
             break
         off += nxt
     return out
+
+
+# ---------------------------------------------------------------- notification banners (per app)
+
+_NOTIFY_SETTINGS = r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings"
+
+
+def get_banner(app_id):
+    """The app's own "show banners" value (0/1), or None when Windows uses its default (on)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _NOTIFY_SETTINGS + "\\" + app_id) as key:
+            return int(winreg.QueryValueEx(key, "ShowBanner")[0])
+    except OSError:
+        return None
+
+
+def set_banner(app_id, value):
+    """value 0 hides the app's pop-up banners (notifications still reach the notification centre,
+    which Island mirrors); None restores Windows' default."""
+    path = _NOTIFY_SETTINGS + "\\" + app_id
+    if value is None:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, "ShowBanner")
+        except OSError:
+            pass
+        return
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "ShowBanner", 0, winreg.REG_DWORD, int(value))

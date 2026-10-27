@@ -239,17 +239,40 @@ class BambuPrinter(QObject):
 
     # ---------------------------------------------------------------- network thread
     def _run(self, gen, c):
-        delay = 3
+        delay, misses = 3, 0
         while gen == self._gen:
             try:
                 self._session(gen, c)
-                delay = 3
+                delay, misses = 3, 0
             except Exception as exc:  # noqa: BLE001 - shown in the UI, then retried
                 if gen != self._gen:
                     return
                 bridge.on_main(self._set_error, gen, _bambu_error(exc))
+                misses += 1
+                if misses % 2 == 0 and not isinstance(exc, PermissionError) and self.TLS:
+                    # the router may have given the printer a new address: look for it by serial number
+                    found = next((p for p in discover_bambu(5) if p["serial"] == c["serial"]), None)
+                    if found and found["ip"] != c["host"] and gen == self._gen:
+                        c = dict(c, host=found["ip"])
+                        bridge.on_main(self._moved, gen, found["ip"])
+                        continue
             time.sleep(delay)
             delay = min(delay * 2, 60)
+
+    def _moved(self, gen, ip):
+        if gen == self._gen:
+            self.settings.set("accounts.bambu.host", ip)
+
+    def find(self, done):
+        """Look for printers on the LAN and match them with the access codes Bambu Studio keeps.
+        done([{ip, serial, name, model, code}]) on the UI thread; code may be ""."""
+        def work():
+            codes = bambu_studio_codes()
+            out = []
+            for p in discover_bambu(6):
+                out.append(dict(p, code=codes.get(p["serial"], "")))
+            return out
+        bridge.run_thread(work, done, lambda _e: done([]))
 
     def _session(self, gen, c):
         raw = socket.create_connection((c["host"], self.PORT), timeout=8)
@@ -339,6 +362,90 @@ class BambuPrinter(QObject):
         self._pending = False
         self._emit_at = time.monotonic()
         self.changed.emit()
+
+
+def bambu_studio_codes():
+    """{serial: access code} that Bambu Studio saved for printers used over the LAN (read-only)."""
+    if os.name == "nt":
+        path = os.path.join(os.environ.get("APPDATA") or "", "BambuStudio", "BambuStudio.conf")
+    else:
+        path = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                            "BambuStudio", "BambuStudio.conf")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        data = json.loads(text[text.find("{"):text.rfind("}") + 1])   # the file starts with a comment line
+    except (OSError, ValueError):
+        return {}
+    codes = {}
+    for key in ("access_code", "user_access_code"):
+        for serial, code in (data.get(key) or {}).items():
+            if isinstance(code, str) and code.strip():
+                codes.setdefault(serial.upper(), code.strip())
+    return codes
+
+
+SSDP_GROUP = "239.255.255.250"
+SSDP_PORTS = (2021, 1990)     # announcements, answers to M-SEARCH
+
+
+def discover_bambu(seconds=6.0):
+    """Printers on the LAN. Bambu printers announce themselves by SSDP on UDP 2021 and answer
+    M-SEARCH on 1990. Returns [{ip, serial, name, model}]."""
+    import re
+    socks = []
+    for port in SSDP_PORTS:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("", port))
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                         struct.pack("4sl", socket.inet_aton(SSDP_GROUP), socket.INADDR_ANY))
+        except OSError:
+            pass
+        s.settimeout(0.25)
+        socks.append(s)
+    q = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    q.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    q.settimeout(0.25)
+    crlf = bytes([13, 10])
+    search = crlf.join([b"M-SEARCH * HTTP/1.1", b"HOST: 239.255.255.250:1990", b'MAN: "ssdp:discover"', b"MX: 1",
+                        b"ST: urn:bambulab-com:device:3dprinter:1", b"", b""])
+    for addr in ((SSDP_GROUP, 1990), ("255.255.255.255", 2021)):
+        try:
+            q.sendto(search, addr)
+        except OSError:
+            pass
+    socks.append(q)
+    found = {}
+    end = time.monotonic() + seconds
+    try:
+        while time.monotonic() < end and not (found and time.monotonic() > end - seconds + 2.5):
+            for s in socks:
+                try:
+                    data, addr = s.recvfrom(4096)
+                except OSError:
+                    continue
+                text = data.decode("utf-8", "replace")
+
+                def field(name, text=text):
+                    m = re.search(r"^" + name + r":\s*(.+?)\s*$", text, re.I | re.M)
+                    return m.group(1) if m else ""
+                serial = field("USN").upper()
+                if not serial or "bambu" not in text.lower():
+                    continue
+                loc = field("Location")
+                found[serial] = {"ip": loc if re.match(r"^\d+\.\d+\.\d+\.\d+$", loc) else addr[0],
+                                 "serial": serial, "name": field(r"DevName\.bambu\.com") or serial,
+                                 "model": MODELS.get(field(r"DevModel\.bambu\.com"), "")}
+    finally:
+        for s in socks:
+            s.close()
+    return list(found.values())
+
+
+MODELS = {"C11": "P1P", "C12": "P1S", "C13": "X1E", "BL-P001": "X1 Carbon", "BL-P002": "X1", "N1": "A1 mini",
+          "N2S": "A1", "O1D": "H2D", "O1S": "H2S", "N7": "P2S"}
 
 
 def _bambu_error(exc):

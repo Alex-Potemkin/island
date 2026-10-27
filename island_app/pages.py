@@ -1109,7 +1109,7 @@ class ControlPage(Page):
         except OSError:
             self.dark.setChecked(not on)
         if self.app.settings.get("theme") == "system":
-            QTimer.singleShot(400, self.app.rebuild)
+            QTimer.singleShot(400, self.app.restyle)
 
     def _awake(self, on):
         self._awake_on = on
@@ -1577,29 +1577,121 @@ class InboxPage(Page):
         self.list.setSelectionMode(QAbstractItemView.NoSelection)
         self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list.itemClicked.connect(self._open)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
+        self.filter = ""                   # "" = all, else an app or source name
+        self.filters = QHBoxLayout()
+        self.filters.setContentsMargins(0, 0, 0, 0)
+        self.filters.setSpacing(T.s(4))
+        fw = QWidget()
+        fw.setLayout(self.filters)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(T.s(8))
+        lay.addWidget(fw)
         lay.addWidget(self.list, 1)
-        lay.addWidget(hbox(label("Клик — открыть", "faint"), "stretch",
+        lay.addWidget(hbox(label("Клик — открыть · правая кнопка — убрать", "faint"), "stretch",
                            button("Настроить", "ghost", lambda: self.app.open_settings("notify")),
-                           button("Очистить", "ghost", self.app.notifications.clear), spacing=2))
+                           button("Очистить", "ghost", self._clear), spacing=2))
         self.items = []
+        self._sig = None
         self.listen(self.app.notifications.changed, self.refresh)
         self.refresh()
 
+    def on_show(self):
+        self.app.notifications.mark_read()
+
+    @staticmethod
+    def _who(n):
+        from .notifications import SOURCES
+        return n.get("app") or SOURCES.get(n.get("source"), ("", "Другое"))[1]
+
+    def _filters(self, history):
+        """Chips: everything, then the senders with the most notifications."""
+        counts = {}
+        for n in history:
+            counts[self._who(n)] = counts.get(self._who(n), 0) + 1
+        top = sorted(counts, key=lambda k: -counts[k])[:6]
+        if self.filter and self.filter not in counts:
+            self.filter = ""
+        sig = (tuple(top), self.filter)
+        if sig == self._sig:
+            return
+        self._sig = sig
+        while self.filters.count():
+            w = self.filters.takeAt(0).widget()
+            if w:
+                w.hide()
+                w.deleteLater()
+        for key, title in [("", f"Все · {len(history)}")] + [(k, f"{k} · {counts[k]}") for k in top]:
+            b = button(title, "chip")
+            b.setCheckable(True)
+            b.setChecked(key == self.filter)
+            b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
+            self.filters.addWidget(b)
+        self.filters.addStretch(1)
+
+    def _set_filter(self, key):
+        self.filter = key
+        self._sig = None
+        self.refresh()
+
     def refresh(self):
+        history = list(self.app.notifications.history)
+        self._filters(history)
         self.list.clear()
-        self.items = list(self.app.notifications.history)
+        self.items = [n for n in history if not self.filter or self._who(n) == self.filter]
         for n in self.items:
             it = QListWidgetItem()
             it.setSizeHint(QSize(10, W.T.s(46)))
             self.list.addItem(it)
             self.list.setItemWidget(it, InboxRow(n))
         if not self.items:
-            it = QListWidgetItem("Пока тихо. Здесь соберутся уведомления календаря, GitHub, напоминаний и таймера.")
+            it = QListWidgetItem("Пока тихо. Здесь соберутся уведомления приложений, календаря, GitHub, "
+                                 "напоминаний и таймера.")
             it.setFlags(Qt.NoItemFlags)
             self.list.addItem(it)
+
+    def _clear(self):
+        """Clears what the filter shows (everything when no filter is on)."""
+        if not self.filter:
+            self.app.notifications.clear()
+            return
+        self.app.notifications.history[:] = [n for n in self.app.notifications.history
+                                             if self._who(n) != self.filter]
+        self.app.store.touch()
+        self.app.notifications.changed.emit()
+
+    def _menu(self, pos):
+        it = self.list.itemAt(pos)
+        row = self.list.row(it) if it else -1
+        if not 0 <= row < len(self.items):
+            return
+        n = self.items[row]
+        m = QMenu(self)
+        m.addAction("Открыть", lambda: self.app.notifications.open(n))
+        m.addAction("Убрать", lambda: self._remove(n))
+        if n.get("app"):
+            m.addAction(f"Не показывать от «{n['app']}»", lambda: self._mute(n["app"]))
+        self.app.island.hold(True)
+        try:
+            m.exec(self.list.viewport().mapToGlobal(pos))
+        finally:
+            self.app.island.hold(False)
+
+    def _remove(self, n):
+        hist = self.app.notifications.history
+        hist[:] = [x for x in hist if x.get("id") != n.get("id")]
+        self.app.store.touch()
+        self.app.notifications.changed.emit()
+
+    def _mute(self, app_name):
+        c = self.app.notifications.cfg
+        muted = list(c.get("muted_apps") or [])
+        if app_name not in muted:
+            muted.append(app_name)
+        self.app.settings.set("notifications.muted_apps", muted)
+        self.app.alert("", f"«{app_name}» без уведомлений", "вернуть: Настройки → Уведомления", ttl=2.5)
 
     def _open(self, it):
         row = self.list.row(it)
