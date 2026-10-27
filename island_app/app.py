@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import bridge, capture, config, features, integrations, layout, osapi, perf, services
+from . import bridge, capture, config, devices, features, integrations, layout, osapi, perf, services
 from .notifications import Notifications
 from . import widgets as W
 from .island import Island, is_input
@@ -19,7 +19,8 @@ SERVER_NAME = "IslandApp-" + (os.environ.get("USERNAME") or "user")
 if os.environ.get("ISLAND_HOME"):  # a test profile runs as its own instance
     SERVER_NAME += "-" + str(zlib.crc32(os.environ["ISLAND_HOME"].encode()))
 
-PRIORITY = {"alert": 100, "claude_wait": 80, "timer": 60, "claude": 50, "download": 40, "music": 30, "caps": 20}
+PRIORITY = {"alert": 100, "claude_wait": 80, "timer": 60, "claude": 50, "download": 40, "print": 35, "music": 30,
+            "caps": 20}
 
 
 def make_icon(size=64, dark=True):
@@ -39,6 +40,21 @@ def make_icon(size=64, dark=True):
     return QIcon(pm)
 
 
+def _upgrade_settings(settings):
+    """One-time changes for settings written by older versions."""
+    rev = settings.get("rev", 1)
+    if not isinstance(rev, int) or rev >= 2:
+        return
+    lay = settings.get("layout")
+    if isinstance(lay, dict):
+        if lay.get("idle") in (None, "empty"):
+            lay["idle"] = "clock"        # older presets switched the clock off without saying so
+        tabs = lay.get("tabs")
+        if isinstance(tabs, list):
+            tabs.extend(t for t in ("apps", "printer", "deskdash") if t not in tabs)
+    settings.set("rev", 2)
+
+
 class App(QObject):
     def __init__(self, qapp, args=()):
         super().__init__()
@@ -49,6 +65,7 @@ class App(QObject):
         bridge.init()
         config.migrate_old_data()
         self.settings = config.Settings()
+        _upgrade_settings(self.settings)
         perf.configure(self.settings)
         self.store = config.Store()
         self.activities = {}
@@ -65,11 +82,14 @@ class App(QObject):
         self.reminders = features.Reminders(self.store)
         self.clipboard = features.ClipboardHistory(self.settings, self.store)
         self.index = features.Index()
+        self.apps = features.PinnedApps(self.store)
         self.ai = features.AIChat(self.settings)
         self.notifications = Notifications(self)
         self.calendar = integrations.CalendarService(self.settings, self.notifications.push, self.store)
         self.github = integrations.GitHubService(self.settings, self.notifications.push)
         self.system_notifications = integrations.SystemNotifications(self.settings, self.notifications.push)
+        self.printer = devices.BambuPrinter(self.settings, self.notifications.push)
+        self.deskdash = devices.DeskDash(self.settings)
         self.hooks = services.HookServer(int(self.settings.get("hooks.port", 47811))) \
             if self.settings.get("hooks.enabled", True) else None
         self._alert_timer = QTimer(self, singleShot=True, timeout=self.clear_alert)
@@ -168,6 +188,8 @@ class App(QObject):
         self.timer.changed.connect(self.on_live)
         self.timer.finished.connect(self._timer_finished)
         self.reminders.fired.connect(self._reminder_fired)
+        self.printer.changed.connect(self.on_live)
+        self.deskdash.spotify_changed.connect(self.on_live)
         self.sys.layout_changed.connect(self._layout)
         self.sys.caps_changed.connect(self._caps)
         self.sys.privacy_changed.connect(self._privacy)
@@ -199,6 +221,15 @@ class App(QObject):
         if st.get("active") and self.settings.get("live.music", True) and (st.get("playing") or "music" in live):
             live["music"] = {"kind": "music", "title": st.get("title") or st.get("artist") or "",
                              "playing": st.get("playing"), "art": st.get("art")}
+        elif self.settings.get("live.music", True) and self.deskdash.remote_playing():
+            now = self.deskdash.remote_playing()       # Spotify on the phone / a speaker, via DeskDash
+            live["music"] = {"kind": "music", "title": now.get("title", ""), "playing": True, "art": None,
+                             "device": now.get("device", "")}
+        if self.settings.get("live.print", True) and self.printer.active:
+            pr = self.printer
+            live["print"] = {"kind": "print", "title": pr.job or pr.cfg()["name"], "progress": pr.percent / 100,
+                             "value": f"{pr.percent}% · {devices.fmt_minutes(pr.remaining)}",
+                             "paused": pr.gcode_state == "PAUSE", "action": lambda: self.island.expand("printer")}
         if self.settings.get("live.timer", True) and self.timer.active:
             live["timer"] = {"kind": "timer", "title": self.timer.label or "Таймер", "value": self.timer.display(),
                              "progress": self.timer.progress(), "running": self.timer.running,
@@ -310,6 +341,8 @@ class App(QObject):
                    "ai": lambda: self.island.expand("ai", focus=True),
                    "show": lambda: self.island.expand(), "settings": lambda: self.island.expand("settings"),
                    "calendar": lambda: self.island.expand("calendar"), "inbox": lambda: self.island.expand("inbox"),
+                   "apps": lambda: self.island.expand("apps"), "printer": lambda: self.island.expand("printer"),
+                   "deskdash": lambda: self.island.expand("deskdash"),
                    "quit": self.quit}
         fn = actions.get(name)
         if fn:
@@ -343,7 +376,9 @@ class App(QObject):
         self._rebuild_timer.start()
 
     def apply_preset(self, key):
-        self.settings.set("layout", dict(layout.PRESETS[key]["layout"]))
+        lay = dict(layout.PRESETS[key]["layout"])
+        lay["idle"] = layout.current(self.settings)["idle"]     # a preset doesn't change what the pill shows
+        self.settings.set("layout", lay)
         self.alert("\uE7C4", "Набор «" + layout.PRESETS[key]["title"] + "»", ttl=1.6)
         QTimer.singleShot(30, self.rebuild)
 
@@ -363,6 +398,10 @@ class App(QObject):
         self.island.expand(key, focus=key in ("clipboard", "ai", "reminders"))
         if new_note:
             self.island.panel.page("notes").new_note()
+
+    def pin_app(self, name, target, kind):
+        if self.apps.add(name, target, kind):
+            self.alert("", "Закреплено", name, ttl=1.6, action=lambda: self.open_page("apps"))
 
     def copy_text(self, text):
         self.clipboard.set_text(text)

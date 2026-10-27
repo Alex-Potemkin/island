@@ -67,7 +67,7 @@ def main():
     def after_bad():
         lay = layout.current(app.settings)
         check("unknown keys in settings.json are ignored", lay["tabs"] == ["home"] and lay["home"] == []
-              and lay["idle"] == "empty", lay)
+              and lay["idle"] == "clock", lay)   # unknown idle value falls back to the clock
 
     def preset():
         app.apply_preset("full")

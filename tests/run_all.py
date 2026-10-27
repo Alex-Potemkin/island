@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TESTS = ["check_tools", "check_layout", "check_integrations", "check_calendar", "check_notes"]
+TESTS = ["check_tools", "check_layout", "check_integrations", "check_calendar", "check_notes", "check_desk"]
 
 
 def main():

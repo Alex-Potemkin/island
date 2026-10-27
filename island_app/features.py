@@ -508,8 +508,111 @@ def launch_app(target, kind):
             cmd = re.sub(r"%[a-zA-Z]", "", fields.get("Exec", "")).strip()
             if cmd:
                 osapi.spawn(shlex.split(cmd))
+    elif target.startswith(("http://", "https://")):
+        import webbrowser
+        webbrowser.open(target)
     else:
         osapi.open_path(target)
+
+
+# ---------------------------------------------------------------- pinned apps
+
+
+class PinnedApps(QObject):
+    """Programs, folders, files and sites pinned to the island. Stored in data.json "apps":
+    {"id", "name", "target", "kind"}  kind: lnk (any path or URL) | appid (Store app) | desktop (Linux)."""
+    changed = Signal()
+
+    def __init__(self, store):
+        super().__init__()
+        self.store = store
+        self._icons = {}
+
+    @property
+    def items(self):
+        return self.store["apps"]
+
+    def has(self, target):
+        t = os.path.normcase(target)
+        return any(os.path.normcase(a["target"]) == t for a in self.items)
+
+    def add(self, name, target, kind="lnk"):
+        if not target or self.has(target):
+            return False
+        self.items.append({"id": uuid.uuid4().hex[:8], "name": name or target, "target": target, "kind": kind})
+        self._save()
+        return True
+
+    def add_path(self, path):
+        """A dropped or chosen file/folder/URL."""
+        if path.startswith(("http://", "https://")):
+            from urllib.parse import urlparse
+            return self.add(urlparse(path).netloc.replace("www.", "") or path, path, "lnk")
+        path = os.path.normpath(path)
+        base = os.path.basename(path.rstrip("\\/")) or path
+        name, ext = os.path.splitext(base)
+        if ext.lower() == ".desktop":
+            entry = _parse_desktop(path, "ru")
+            return self.add(entry[0] if entry else name, path, "desktop")
+        return self.add(base if os.path.isdir(path) else name, path, "lnk")
+
+    def remove(self, aid):
+        self.items[:] = [a for a in self.items if a["id"] != aid]
+        self._save()
+
+    def move(self, aid, delta):
+        items = self.items
+        i = next((i for i, a in enumerate(items) if a["id"] == aid), None)
+        if i is None or not 0 <= i + delta < len(items):
+            return
+        items[i], items[i + delta] = items[i + delta], items[i]
+        self._save()
+
+    def rename(self, aid, name):
+        for a in self.items:
+            if a["id"] == aid and name.strip():
+                a["name"] = name.strip()
+                self._save()
+
+    def _save(self):
+        self.store.touch()
+        self.changed.emit()
+
+    def launch(self, a):
+        launch_app(a["target"], a["kind"])
+
+    def exists(self, a):
+        return a["kind"] == "appid" or a["target"].startswith(("http://", "https://")) or os.path.exists(a["target"])
+
+    def icon(self, a):
+        """QIcon for a pin (cached); None means: draw a letter tile."""
+        key = a["target"]
+        if key not in self._icons:
+            from PySide6.QtCore import QFileInfo
+            from PySide6.QtGui import QIcon
+            from PySide6.QtWidgets import QFileIconProvider
+            icon = None
+            if a["kind"] == "desktop":
+                name = ""
+                try:
+                    with open(a["target"], encoding="utf-8", errors="replace") as f:
+                        name = next((ln.split("=", 1)[1].strip() for ln in f if ln.startswith("Icon=")), "")
+                except OSError:
+                    pass
+                if name:
+                    icon = QIcon(name) if name.startswith("/") else QIcon.fromTheme(name)
+            elif a["kind"] == "lnk" and not a["target"].startswith(("http://", "https://")) \
+                    and os.path.exists(a["target"]):
+                icon = QFileIconProvider().icon(QFileInfo(a["target"]))
+            self._icons[key] = icon if icon is not None and not icon.isNull() else None
+        return self._icons[key]
+
+    def candidates(self, index, q, limit=60):
+        """Start-menu apps to pin: the best matches for q, or all of them (A–Z) when q is empty."""
+        if q.strip():
+            return [(name, target, kind) for _s, name, target, kind in index.search_apps(q, limit)]
+        with index._lock:
+            return list(index.apps)
 
 
 # ---------------------------------------------------------------- Claude chat (Anthropic SDK)

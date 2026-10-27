@@ -23,6 +23,8 @@ SOURCES = {  # key: (glyph, title)
     "timer": ("", "Таймер"),
     "downloads": ("", "Загрузки"),
     "claude": ("", "Claude Code"),
+    "printer": ("", "3D-принтер"),
+    "deskdash": ("", "DeskDash"),
     "scripts": (BELL, "Скрипты и вебхуки"),
     "apps": (BELL, "Другие приложения"),
 }

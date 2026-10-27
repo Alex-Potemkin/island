@@ -20,6 +20,9 @@ TABS = {  # key: (glyph, title, description)
     "ai": ("", "Claude", "Чат и перевод"),
     "calendar": ("", "Календарь", "События из Google и iCal-календарей"),
     "inbox": ("", "Уведомления", "История всплывающих уведомлений"),
+    "apps": ("", "Приложения", "Закреплённые программы, папки и сайты"),
+    "printer": ("", "Принтер", "3D-принтер Bambu Lab: прогресс и время"),
+    "deskdash": ("", "DeskDash", "Макросы и Spotify Connect из DeskDash"),
 }
 
 CARDS = {
@@ -30,6 +33,9 @@ CARDS = {
     "reminders": ("", "Напоминания", "Три ближайших"),
     "note": ("", "Заметка", "Последняя заметка"),
     "agenda": ("", "События", "Ближайшие встречи из календарей"),
+    "apps": ("", "Приложения", "Закреплённые программы"),
+    "printer": ("", "3D-принтер", "Прогресс и сколько осталось"),
+    "deskdash": ("", "DeskDash", "Кнопки макросов"),
 }
 
 QUICK = {  # key: (glyph, title)
@@ -51,14 +57,14 @@ PRESETS = {
     "minimal": {
         "title": "Минимум", "text": "Только самое нужное: главная, буфер, таймер",
         "layout": {"tabs": ["home", "clipboard", "timer"], "home": ["music", "clock"],
-                   "quick": ["screenshot", "command"], "idle": "empty"},
+                   "quick": ["screenshot", "command"], "idle": "clock"},
     },
     "standard": {
         "title": "Стандарт", "text": "Повседневный набор без системных графиков и ИИ",
         "layout": {"tabs": ["home", "clipboard", "shelf", "notes", "timer", "reminders", "calendar", "control",
-                            "tools", "inbox"],
+                            "tools", "inbox", "apps"],
                    "home": ["music", "clock", "agenda"],
-                   "quick": ["screenshot", "picker", "qr", "ocr", "timer5", "note", "command"], "idle": "empty"},
+                   "quick": ["screenshot", "picker", "qr", "ocr", "timer5", "note", "command"], "idle": "clock"},
     },
     "full": {
         "title": "Всё", "text": "Все вкладки и карточки, часы в пилюле",
@@ -77,13 +83,13 @@ def current(settings):
     tabs = [t for t in lay.get("tabs", DEFAULT["tabs"]) if t in TABS] or ["home"]
     home = [c for c in lay.get("home", DEFAULT["home"]) if c in CARDS]
     quick = [q for q in lay.get("quick", DEFAULT["quick"]) if q in QUICK]
-    idle = lay.get("idle", "empty") if lay.get("idle") in IDLE else "empty"
+    idle = lay["idle"] if lay.get("idle") in IDLE else "clock"
     return {"tabs": list(dict.fromkeys(tabs)), "home": list(dict.fromkeys(home)),
             "quick": list(dict.fromkeys(quick)), "idle": idle}
 
 
 def matching_preset(lay):
     for key, p in PRESETS.items():
-        if all(lay.get(k) == v for k, v in p["layout"].items()):
+        if all(lay.get(k) == v for k, v in p["layout"].items() if k != "idle"):
             return key
     return None

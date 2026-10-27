@@ -342,6 +342,10 @@ class Island(QWidget):
             return h + T.s(10) + text + T.s(14) + T.s(30) + T.s(14) + dots
         if kind == "timer":
             return T.s(196) + dots
+        if kind == "print":
+            title = min(QFontMetrics(T.font(12, 500)).horizontalAdvance(live.get("title", "")), T.s(150))
+            value = QFontMetrics(T.tabular(13)).horizontalAdvance(live.get("value", ""))
+            return h + T.s(4) + title + T.s(14) + value + T.s(16) + dots
         text = fm.horizontalAdvance(live.get("title", ""))
         sub = QFontMetrics(T.font(12)).horizontalAdvance(live.get("sub", "")) if live.get("sub") else 0
         right = T.s(30) if kind in ("claude",) else 0
@@ -476,6 +480,31 @@ class Island(QWidget):
         p.setPen(T.col("fg"))
         p.drawText(QRectF(r.left(), r.top(), right - T.s(8) - r.left(), r.height()),
                    Qt.AlignVCenter | Qt.AlignRight, live.get("value", ""))
+
+    def _live_print(self, p, r, live, right):
+        """3D print: progress ring with the printer glyph, job name, percent and time left."""
+        T = self.P
+        ring = QRectF(r.left() + T.s(8), r.top() + T.s(7), r.height() - T.s(14), r.height() - T.s(14))
+        p.setPen(QPen(T.col("active"), T.s(2.5)))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(ring)
+        prog = live.get("progress", 0)
+        if prog:
+            p.setPen(QPen(T.col("fg"), T.s(2.5), Qt.SolidLine, Qt.RoundCap))
+            p.drawArc(ring, 90 * 16, int(-360 * 16 * prog))
+        self._icon(p, ring, "" if live.get("paused") else "", "fg2", 9)
+        p.setFont(T.tabular(13))
+        p.setPen(T.col("fg"))
+        value = live.get("value", "")
+        vw = p.fontMetrics().horizontalAdvance(value)
+        p.drawText(QRectF(right - T.s(8) - vw, r.top(), vw, r.height()), Qt.AlignVCenter | Qt.AlignRight, value)
+        x = ring.right() + T.s(10)
+        p.setFont(T.font(12, 500))
+        p.setPen(T.col("fg2"))
+        avail = right - T.s(20) - vw - x
+        if avail > T.s(16):
+            p.drawText(QRectF(x, r.top(), avail, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                       p.fontMetrics().elidedText(live.get("title", ""), Qt.ElideRight, int(avail)))
 
     def _live_alert(self, p, r, live, right):
         T = self.P
@@ -854,7 +883,8 @@ class Island(QWidget):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
             self.dragging = True
-            if self.mode != "expanded" or self.panel.current.key != "shelf":
+            # dropped on the open "Приложения" tab: pin; anywhere else: the shelf
+            if self.mode != "expanded" or self.panel.current.key not in ("shelf", "apps"):
                 self.expand("shelf")
 
     def dragMoveEvent(self, e):
@@ -866,6 +896,11 @@ class Island(QWidget):
 
     def dropEvent(self, e):
         self.dragging = False
+        if self.panel.current.key == "apps":
+            urls = [u.toLocalFile() if u.isLocalFile() else u.toString() for u in e.mimeData().urls()]
+            e.acceptProposedAction()
+            self.panel.page("apps").add_paths([u for u in urls if u])
+            return
         paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
         if paths:
             e.acceptProposedAction()

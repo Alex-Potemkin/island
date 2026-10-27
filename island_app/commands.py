@@ -8,7 +8,7 @@ import re
 import urllib.parse
 import webbrowser
 
-from . import features, osapi
+from . import devices, features, osapi
 
 # ---------------------------------------------------------------- durations
 
@@ -310,7 +310,29 @@ def build_results(app, query):
         if any(w.startswith(low) or low in w for w in words) and len(low) >= 2:
             out.append(R(icon, title, sub, fn))
 
+    m = re.match(r"^(?:закрепить|pin)\s+(.+)$", q, flags=re.I)
+    if m:
+        for _score, name, target, kind in app.index.search_apps(m.group(1), 4):
+            out.append(R("", name, "Закрепить на острове" if not app.apps.has(target) else "Уже закреплено",
+                         lambda n=name, t=target, k=kind: app.pin_app(n, t, k)))
+    if len(low) >= 2:
+        for a in app.apps.items:     # pinned apps come before the rest
+            if features.fuzzy(low, a["name"].lower()):
+                out.append(R("", a["name"], "Закреплено на острове", lambda a=a: app.apps.launch(a)))
+    dd = app.deskdash
+    if dd.online and len(low) >= 2:
+        word = re.sub(r"^(?:макрос|macro|deskdash)\s*", "", low)
+        for mc in dd.macros:
+            name = mc.get("label", "")
+            if (word and features.fuzzy(word, name.lower())) or (not word and word != low):
+                out.append(R(devices.DESKDASH_GLYPHS.get(mc.get("icon"), ""), name, "Макрос DeskDash",
+                             lambda mid=mc["id"]: dd.run_macro(mid)))
+    if app.printer.configured and re.match(r"^(?:принт|печат|print|3d|bambu)", low):
+        out.append(R("", app.printer.summary(), app.printer.cfg()["name"], lambda: app.open_page("printer")))
+
     for _score, name, target, kind in app.index.search_apps(q):
+        if app.apps.has(target):
+            continue
         out.append(R("", name, "Приложение", lambda t=target, k=kind: features.launch_app(t, k)))
     if not re.match(r"^(?:таймер|timer|напомни|remind|tr|\?|ai)\b", low):
         for path in app.index.search_files(q, 5):

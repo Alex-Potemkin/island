@@ -485,7 +485,8 @@ class SettingsPage(Page):
         f.title("Живые события", "Что пилюля показывает сама.")
         live = self.app.settings.get("live", {})
         opts = [("music", "Музыка"), ("timer", "Таймер"), ("layout", "Раскладка"), ("caps", "Caps Lock"),
-                ("privacy", "Микрофон и камера"), ("downloads", "Загрузки"), ("claude", "Claude Code")]
+                ("privacy", "Микрофон и камера"), ("downloads", "Загрузки"), ("claude", "Claude Code"),
+                ("print", "3D-печать")]
         f.add(chip_grid(opts, [k for k, _t in opts if live.get(k, True)],
                         lambda keys: self.app.set_setting("live", {k: k in keys for k, _t in opts})))
         f.add(hbox("stretch", button("Вернуть как было", "ghost", lambda: self.app.apply_preset("full"))))
@@ -694,6 +695,29 @@ class SettingsPage(Page):
         f.add(hbox(button("Создать токен на github.com", "ghost", lambda: _open_url(
             "https://github.com/settings/tokens/new?scopes=notifications&description=Island")), "stretch"))
         self.listen(gh.changed, self._accounts_status)
+
+        # 3D printer and DeskDash: set up on their own tabs
+        f.title("3D-принтер Bambu Lab", "Прогресс и время до конца печати в пилюле. IP, серийный номер и код доступа "
+                "с экрана принтера (Настройки → Сеть).")
+        pr = self.app.printer
+        pr_status = label("", "muted")
+        f.add(hbox(pr_status, "stretch", button("Настроить", None, lambda: self.app.open_page("printer")), spacing=6))
+        dd = self.app.deskdash
+        f.title("DeskDash", "Макросы и Spotify Connect из DeskDash.exe на этом ПК (настройки берутся из него).")
+        dd_status = label("", "muted")
+        dd_on = W.Toggle(dd.enabled)
+        dd_on.toggled.connect(dd.set_enabled)
+        f.row("Связь с DeskDash", "", dd_on)
+        f.add(hbox(dd_status, "stretch", button("Открыть вкладку", None, lambda: self.app.open_page("deskdash")),
+                   spacing=6))
+
+        def dev_status():
+            pr_status.setText(pr.summary() if pr.configured else "Не подключён")
+            dd_status.setText(("Подключён: " + (dd.name or "DeskDash")) if dd.online else
+                              (dd.error or "Не найден") if dd.installed else "DeskDash не установлен на этом ПК")
+        self.listen(pr.changed, dev_status)
+        self.listen(dd.changed, dev_status)
+        dev_status()
 
         f.title("Другие сервисы", "Любой сервис, умеющий вебхуки (IFTTT, Zapier, Home Assistant, n8n, скрипты), "
                 f"может прислать уведомление: POST http://127.0.0.1:{s.get('hooks.port')}/notify "

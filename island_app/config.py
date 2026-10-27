@@ -41,7 +41,7 @@ DEFAULTS = {
     "collapse_delay_ms": 450,
     "dnd": False,               # do not disturb: no transient alerts
     "live": {"music": True, "timer": True, "layout": True, "caps": True,
-             "privacy": True, "downloads": True, "claude": True},
+             "privacy": True, "downloads": True, "claude": True, "print": True},
     "clipboard": {"max_items": 200, "save_images": True},
     "hotkeys": {
         "command": "alt+space",
@@ -62,7 +62,9 @@ DEFAULTS = {
                       "event_lead": 10, "quiet": {"enabled": False, "from": 22, "to": 8}, "sources": {}, "sounds": {},
                       "apps": True, "muted_apps": []},
     "accounts": {"google": {"client_id": "", "client_secret": "", "refresh": "", "email": ""},
-                 "github": {"token": ""}, "ics": []},
+                 "github": {"token": ""}, "ics": [],
+                 "bambu": {"host": "", "serial": "", "code": "", "name": ""}},
+    "deskdash": {"enabled": True, "spotify": True},   # macros and Spotify Connect through the DeskDash agent
     "pomodoro": {"work": 25, "short": 5, "long": 15, "cycles": 4},
 }
 
@@ -174,7 +176,7 @@ def migrate_old_data():
     return True
 
 
-LISTS = ("notes", "reminders", "clips", "shelf", "colors", "notifications", "events")
+LISTS = ("notes", "reminders", "clips", "shelf", "colors", "notifications", "events", "apps")
 
 
 def _clean_notes(notes):
@@ -214,6 +216,11 @@ class Store:
         for k in LISTS:  # a hand-edited or damaged file must not break a whole tab
             if not isinstance(self.data.get(k), list):
                 self.data[k] = []
+        self.data["apps"] = [a for a in self.data["apps"] if isinstance(a, dict) and isinstance(a.get("target"), str)
+                             and a["target"] and isinstance(a.get("id"), str)]
+        for a in self.data["apps"]:
+            a["name"] = a["name"] if isinstance(a.get("name"), str) and a["name"] else a["target"]
+            a["kind"] = a["kind"] if a.get("kind") in ("lnk", "appid", "desktop") else "lnk"
         notes = _clean_notes(self.data["notes"])
         self.cleaned = len(self.data["notes"]) - len(notes)
         if notes != self.data["notes"]:

@@ -50,7 +50,7 @@ def main():
         if key in ("system", "none"):
             continue
         with wave.open(p) as w:
-            ok = w.getframerate() == 44100 and 0.05 < w.getnframes() / 44100 < 1.5
+            ok = w.getframerate() == 44100 and 0.05 < w.getnframes() / 44100 < 2.6   # melodies ring up to ~2.2 s
         check(f"sound «{sounds.SOUNDS[key]}» generated", ok, os.path.basename(p))
     quiet, loud = sounds.sound_file("bell", 10), sounds.sound_file("bell", 100)
     with wave.open(quiet) as a, wave.open(loud) as b:

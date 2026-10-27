@@ -364,6 +364,18 @@ class HomePage(Page):
         self.listen(self.app.calendar.changed, refresh)
         return c
 
+    def _card_apps(self):
+        from . import desk_ui
+        return desk_ui.card_apps(self)
+
+    def _card_printer(self):
+        from . import desk_ui
+        return desk_ui.card_printer(self)
+
+    def _card_deskdash(self):
+        from . import desk_ui
+        return desk_ui.card_deskdash(self)
+
     def _card_note(self):
         c = card()
         cl = _card_layout(c, 14, 6)
@@ -1596,6 +1608,8 @@ class InboxPage(Page):
 
 
 from .calendar_ui import CalendarPage  # noqa: E402  (uses the helpers above)
+from .desk_ui import AppsPage, DeskDashPage, PrinterPage  # noqa: E402
 
 PAGES = {cls.key: cls for cls in (HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage,
-                                  ControlPage, ToolsPage, SystemPage, AIPage, CalendarPage, InboxPage)}
+                                  ControlPage, ToolsPage, SystemPage, AIPage, CalendarPage, InboxPage,
+                                  AppsPage, PrinterPage, DeskDashPage)}
