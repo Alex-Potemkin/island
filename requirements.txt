@@ -1,4 +1,4 @@
-PySide6>=6.7
+PySide6>=6.12.0
 psutil>=5.9
 pillow>=10
 pyzbar>=0.1.9
