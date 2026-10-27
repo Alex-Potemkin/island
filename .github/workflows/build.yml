@@ -102,12 +102,12 @@ jobs:
           test "$(ls ci-shots/binary | wc -l)" -ge 40
           test -f "$ISLAND_HOME/data.json"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Island-linux
           path: Island-linux-x86_64
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: screenshots-linux
           path: ci-shots/
@@ -156,12 +156,12 @@ jobs:
           Write-Output "exit $($p.ExitCode), $n screenshots"
           if ($p.ExitCode -ne 0 -or $n -lt 40) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Island-windows
           path: Island.exe
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: screenshots-windows
           path: ci-shots/
@@ -222,12 +222,12 @@ jobs:
           codesign --verify --deep --strict Island.app
           hdiutil imageinfo "Island-macos-${{ matrix.arch }}.dmg" > /dev/null
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Island-macos-${{ matrix.arch }}
           path: Island-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: screenshots-macos-${{ matrix.arch }}
           path: ci-shots/
