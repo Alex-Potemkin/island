@@ -38,6 +38,19 @@ def make_icons():
     return ico
 
 
+def stamp_version():
+    """ISLAND_VERSION (set by CI from the git tag) goes into island_app/_version.py for the About line."""
+    version = os.environ.get("ISLAND_VERSION", "").strip().lstrip("v")
+    path = os.path.join(HERE, "island_app", "_version.py")
+    if version:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f'VERSION = "{version}"\n')
+    elif os.path.exists(path):
+        os.remove(path)          # a local build shows the version from config.py
+    return version
+
+
+stamp_version()
 ico = make_icons()
 assets = os.path.join(HERE, "island_app", "assets")
 args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",

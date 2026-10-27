@@ -5,3 +5,5 @@ __pycache__/
 *.spec
 Island-linux-*
 ci-shots/
+island_app/_version.py
+dist-release/

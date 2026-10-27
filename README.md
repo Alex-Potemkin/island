@@ -1,5 +1,12 @@
 # Island
 
+[![CI / CD](https://github.com/Alex-Potemkin/island/actions/workflows/build.yml/badge.svg)](https://github.com/Alex-Potemkin/island/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/Alex-Potemkin/island)](https://github.com/Alex-Potemkin/island/releases/latest)
+
+**Скачать:** [последний релиз](https://github.com/Alex-Potemkin/island/releases/latest) — `Island.exe` (Windows)
+и `Island-linux-x86_64` (Linux), или [nightly](https://github.com/Alex-Potemkin/island/releases/tag/nightly) —
+сборка из последнего коммита.
+
 Минималистичный Dynamic Island для Windows 10/11 и Linux: чёрная (или белая) пилюля вверху экрана.
 В ней показываются живые события, а по наведению она раскрывается в панель инструментов.
 Сделано по мотивам [islandapp.pro](https://islandapp.pro), но строже: монохром, без маскотов,
@@ -66,10 +73,30 @@ python build_exe.py
 В Windows получится `Island.exe` (около 70 МБ), в Linux — `Island-linux-x86_64`. Собирать нужно
 на той ОС, для которой нужен файл. Python на целевой машине не нужен.
 
-В репозитории есть CI ([.github/workflows/build.yml](.github/workflows/build.yml)). На каждый push
-он собирает обе версии. Linux-версию он проверяет под Xvfb: прогоняет проверки инструментов,
-запускает демо из исходников и из собранного файла со скриншотами и выкладывает файл и скриншоты
-как артефакты. При теге `v*` файлы прикрепляются к релизу.
+### CI / CD (GitHub Actions)
+[.github/workflows/build.yml](.github/workflows/build.yml):
+
+1. **lint** — `ruff` (синтаксис, неопределённые имена, лишние импорты) и компиляция всех файлов; здесь же
+   вычисляется версия: из тега (`v1.2.0` → `1.2.0`) или `1.1.0-nightly.<номер>+<коммит>`.
+2. **linux** (Ubuntu 22.04 — максимальная совместимость по glibc) и **windows** параллельно: все проверки
+   (`check_tools`, `check_layout`, `check_integrations`, `check_calendar`, `check_notes`, `check_desk`),
+   сборка одного файла с вшитой версией и демо-прогон уже собранного файла (≥ 40 скриншотов).
+   Бинарники и скриншоты — артефакты запуска; pip-зависимости кэшируются.
+3. **publish** — только для push:
+   - в `main` → пре-релиз **nightly** пересоздаётся с файлами из этого коммита;
+   - тег `v*` → релиз «Island X.Y.Z» с автоматическими заметками, `Island.exe`,
+     `Island-linux-x86_64` и `SHA256SUMS.txt`.
+
+Pull request'ы проходят шаги 1–2. Dependabot раз в неделю предлагает обновления экшенов и зависимостей.
+
+Выпустить версию:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Перед этим стоит поднять `APP_VERSION` в `island_app/config.py` — от него считаются номера nightly.
 
 ## Настройка
 

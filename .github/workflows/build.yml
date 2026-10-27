@@ -1,4 +1,9 @@
-name: Build
+name: CI / CD
+
+# push to main  -> lint, tests on Linux and Windows, both binaries built and smoke-tested,
+#                  published as the rolling "nightly" pre-release
+# tag v1.2.3    -> the same, then a GitHub release "Island 1.2.3" with notes, binaries and SHA256SUMS
+# pull request  -> lint, tests and builds only (binaries as workflow artifacts)
 
 on:
   push:
@@ -7,21 +12,58 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 permissions:
-  contents: write
+  contents: read
 
 env:
   PYTHONIOENCODING: utf-8     # test output is in Russian; Windows runners default to cp1252
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
-  linux:
-    # oldest supported runner = widest glibc compatibility for the binary
-    runs-on: ubuntu-22.04
+  lint:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Ruff
+        run: |
+          python -m pip install ruff
+          ruff check .
+      - name: Byte-compile everything
+        run: python -m compileall -q island_app tests main.py build_exe.py
+      - name: Version
+        id: version
+        run: |
+          base=$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' island_app/config.py)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${base}-nightly.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "### Version: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    needs: lint
+    # oldest supported runner = widest glibc compatibility for the binary
+    runs-on: ubuntu-22.04
+    env:
+      ISLAND_VERSION: ${{ needs.lint.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: System packages
         run: |
@@ -33,17 +75,14 @@ jobs:
       - name: Python packages
         run: python -m pip install -r requirements.txt
 
-      - name: Tool checks (parsers, QR, OCR, screenshot, picker)
-        timeout-minutes: 5
-        run: xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_tools.py
-
-      - name: Layout, appearance, accounts and notifications
-        timeout-minutes: 5
+      - name: Tests
+        timeout-minutes: 12
         run: |
-          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_layout.py
-          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_integrations.py
-          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_calendar.py
-          xvfb-run -a -s "-screen 0 1920x1080x24" python tests/check_notes.py
+          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk; do
+            echo "::group::$t"
+            ISLAND_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1920x1080x24" python tests/$t.py
+            echo "::endgroup::"
+          done
 
       - name: Demo run with screenshots (from source)
         timeout-minutes: 6
@@ -66,41 +105,99 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Island-linux
-          path: |
-            Island-linux-x86_64
-            ci-shots/
-
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" Island-linux-x86_64 --clobber
+          path: Island-linux-x86_64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: ci-shots/
+          retention-days: 7
 
   windows:
+    needs: lint
     runs-on: windows-latest
+    env:
+      ISLAND_VERSION: ${{ needs.lint.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
       - name: Python packages
         run: python -m pip install -r requirements.txt
-      - name: Tool checks
-        run: python tests/check_tools.py
-      - name: Layout, accounts and notifications
+
+      - name: Tests
+        timeout-minutes: 12
+        shell: pwsh
         run: |
-          python tests/check_layout.py
-          python tests/check_integrations.py
-          python tests/check_calendar.py
-          python tests/check_notes.py
+          foreach ($t in "check_tools", "check_layout", "check_integrations", "check_calendar", "check_notes", "check_desk") {
+            Write-Output "::group::$t"
+            $env:ISLAND_HOME = Join-Path $env:RUNNER_TEMP "island-$t"
+            python "tests/$t.py"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            Write-Output "::endgroup::"
+          }
+
       - name: Build
         run: python build_exe.py
+
+      - name: Test the binary
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $env:ISLAND_HOME = Join-Path $env:RUNNER_TEMP "island-exe"
+          $out = Join-Path $env:GITHUB_WORKSPACE "ci-shots/binary"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $p = Start-Process .\Island.exe -ArgumentList "--demo", "--exit", "--out", $out -PassThru -Wait
+          $n = (Get-ChildItem $out).Count
+          Write-Output "exit $($p.ExitCode), $n screenshots"
+          if ($p.ExitCode -ne 0 -or $n -lt 40) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: Island-windows
           path: Island.exe
-      - name: Attach to the release
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: ci-shots/
+          retention-days: 7
+
+  publish:
+    needs: [lint, linux, windows]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.lint.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Island-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: |
+          chmod +x Island-linux-x86_64
+          sha256sum Island.exe Island-linux-x86_64 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${env:GITHUB_REF_NAME}" Island.exe --clobber
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "Island $VERSION"
+
+      - name: Nightly
+        if: github.ref == 'refs/heads/main'
+        run: |
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly dist/* --prerelease --target "$GITHUB_SHA" --title "Nightly $VERSION" \
+            --notes "Сборка из последнего коммита main ($GITHUB_SHA). Для обычного использования берите последний релиз."
