@@ -355,6 +355,17 @@ class SettingsPage(Page):
               slider(6, 20, int(s.get("scale", 100)) // 10, lambda v: f"{v * 10}%",
                      lambda v: self.app.set_setting("scale", v * 10, rebuild=True)))
 
+        from . import perf
+        f.title("Производительность")
+        weak = perf.weak_machine()
+        f.row("Режим", ("Этот компьютер похож на слабый — «Авто» включает экономный режим" if weak else
+                        "«Авто» включает экономный режим на слабых компьютерах"),
+              chip_group([("auto", "Авто"), ("eco", "Экономный"), ("normal", "Обычный")],
+                         s.get("performance", "auto"), lambda k: self.app.set_setting("performance", k, rebuild=True)))
+        f.add(label("Экономный: те же функции, но реже опросы (музыка, система, уведомления), 30 кадров/с "
+                    "вместо 60, без тени и плавного проявления панели." + ("  Сейчас включён." if perf.ECO else ""),
+                    "faint", wrap=True))
+
         f.title("Поведение")
         f.row("Открывать панель", "", chip_group(
             [("hover", "Наведением"), ("click", "Кликом")], "hover" if s.get("expand_on_hover", True) else "click",

@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import bridge, config
+from . import bridge, config, perf
 
 LOCAL_TZ = dt.datetime.now().astimezone().tzinfo
 
@@ -494,7 +494,7 @@ class GitHubService(QObject):
         self._seen = set()
         self._modified = None
         self._busy = False
-        self._timer = QTimer(self, interval=120 * 1000, timeout=self.poll)
+        self._timer = perf.timer(QTimer(self, timeout=self.poll), 120 * 1000, 300 * 1000)
         self._timer.start()
         QTimer.singleShot(3000, self.poll)
 
@@ -658,7 +658,7 @@ class SystemNotifications(QObject):
         self._busy = False
         self._proc = None
         self.available = bool(WPN_DB and os.path.exists(WPN_DB)) or bool(shutil.which("dbus-monitor"))
-        self._timer = QTimer(self, interval=1500, timeout=self.poll)
+        self._timer = perf.timer(QTimer(self, timeout=self.poll), 1500, 4000)
         self._timer.start()
         self.poll()
 

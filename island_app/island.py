@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPainterPath,
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QComboBox, QGraphicsOpacityEffect, QHBoxLayout,
                                QLineEdit, QMenu, QPlainTextEdit, QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
-from . import layout, osapi, pages
+from . import layout, osapi, pages, perf
 from .widgets import IconButton, TabButton
 
 HOTKEY_IDS = {}
@@ -154,10 +154,10 @@ class Island(QWidget):
                         "r": Spring(T.s(15), k), "o": Spring(0, 260, 1.0)}
         self.panel = Panel(self)
         self.panel.hide()
-        self._anim = QTimer(self, interval=15, timeout=self._step)
+        self._anim = perf.timer(QTimer(self, timeout=self._step), 15, 33)
         self._last_t = time.monotonic()
-        self._live_anim = QTimer(self, interval=33, timeout=self.update)
-        self._poll = QTimer(self, interval=40, timeout=self._poll_cursor)
+        self._live_anim = perf.timer(QTimer(self, timeout=self._update_pill), 33, 80)
+        self._poll = perf.timer(QTimer(self, timeout=self._poll_cursor), 40, 70)
         self._poll.start()
         self._clock = QTimer(self, interval=5000, timeout=self._clock_tick)
         self._clock.start()
@@ -203,6 +203,7 @@ class Island(QWidget):
     def retarget(self, snap=False):
         T, P = self.T, self.P
         s = self.springs
+        self.app.monitor.watched = self.mode == "expanded"
         snap = snap or not T.stiffness          # "Без анимации"
         live = self.app.current_live()
         if self.mode == "expanded":
@@ -222,7 +223,7 @@ class Island(QWidget):
         if self.mode == "expanded":
             tr = self.target_rect()
             self.panel.setGeometry(tr.toRect())
-            if not self.panel.isVisible():
+            if not self.panel.isVisible() and not perf.ECO:
                 self.panel.show()
         if snap:
             for sp in s.values():
@@ -270,6 +271,15 @@ class Island(QWidget):
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _apply_panel_opacity(self):
+        if perf.ECO:
+            # an opacity effect renders the whole panel off-screen on every frame: no fade, the content
+            # just appears once the shape has (almost) opened
+            self.panel.effect.setEnabled(False)
+            tr, cur = self.target_rect(), self.shape_rect()
+            k = min(cur.width() / max(tr.width(), 1), cur.height() / max(tr.height(), 1))
+            self.panel.setVisible(self.mode == "expanded" and k > 0.96)
+            return
+        self.panel.effect.setEnabled(True)
         if self.mode == "expanded":
             # content fades in once the shape is mostly open
             tr = self.target_rect()
@@ -291,7 +301,7 @@ class Island(QWidget):
         rad = min(self.springs["r"].v, r.height() / 2)
         big = r.height() > T.s(60)
         # soft shadow
-        if (big or not T.dark) and T.shadow and osapi.IS_WINDOWS:
+        if (big or not T.dark) and T.shadow and osapi.IS_WINDOWS and not perf.ECO:
             layers = (4 if self._anim.isActive() else 10) if big else 3
             base = T.c["shadow"] if big else T.c["shadow"] // 3
             for i in range(layers, 0, -1):
@@ -510,6 +520,9 @@ class Island(QWidget):
     _live_claude = _live_alert
     _live_download = _live_alert
     _live_privacy = _live_alert
+
+    def _update_pill(self):
+        self.update(self.shape_rect().toAlignedRect().adjusted(-2, -2, 2, 2))
 
     def _update_live_anim(self):
         live = self.app.current_live()

@@ -10,7 +10,7 @@ import uuid
 from PySide6.QtCore import QMimeData, QObject, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImage
 
-from . import bridge, config, osapi
+from . import bridge, config, osapi, perf
 
 # ---------------------------------------------------------------- timer
 
@@ -39,7 +39,7 @@ class TimerService(QObject):
         self.phase = "work"          # pomodoro: work | short | long
         self.cycle = 0
         self._last = 0.0
-        self._tick = QTimer(self, interval=200, timeout=self._on_tick)
+        self._tick = perf.timer(QTimer(self, timeout=self._on_tick), 200, 500)
 
     @property
     def active(self):
@@ -339,7 +339,7 @@ class Index(QObject):
         self.files = []  # (name_lower, path)
         self._lock = threading.Lock()
         QTimer.singleShot(800, self.rebuild)
-        self._timer = QTimer(self, interval=10 * 60 * 1000, timeout=self.rebuild)
+        self._timer = perf.timer(QTimer(self, timeout=self.rebuild), 10 * 60 * 1000, 30 * 60 * 1000)
         self._timer.start()
 
     def rebuild(self):

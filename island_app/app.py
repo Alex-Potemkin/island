@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import bridge, capture, config, features, integrations, layout, osapi, services
+from . import bridge, capture, config, features, integrations, layout, osapi, perf, services
 from .notifications import Notifications
 from . import widgets as W
 from .island import Island, is_input
@@ -47,7 +47,9 @@ class App(QObject):
         self.demo = "--demo" in self.args
         self.hard_exit = True   # tests turn this off to keep their own exit code
         bridge.init()
+        config.migrate_old_data()
         self.settings = config.Settings()
+        perf.configure(self.settings)
         self.store = config.Store()
         self.activities = {}
         self.privacy = ([], [])
@@ -106,6 +108,7 @@ class App(QObject):
 
     def rebuild(self):
         """Theme/scale/screen changed: recreate the window, keep state."""
+        perf.configure(self.settings)
         page = self.island.page_key
         expanded = self.island.mode == "expanded"
         self.island.hide()

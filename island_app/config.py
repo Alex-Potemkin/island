@@ -15,7 +15,10 @@ from .theme import APPEARANCE
 APP_NAME = "Island"
 APP_VERSION = "1.0.0"
 
-DATA_DIR = os.environ.get("ISLAND_HOME") or osapi.data_dir(APP_NAME)
+# %APPDATA%/Island is also used by another app called Island (an Electron app), so Windows data lives in
+# its own folder; files from older versions are moved over once (see migrate_old_data).
+DATA_DIR = os.environ.get("ISLAND_HOME") or osapi.data_dir("IslandDesk" if osapi.IS_WINDOWS else APP_NAME)
+OLD_DATA_DIR = None if os.environ.get("ISLAND_HOME") or not osapi.IS_WINDOWS else osapi.data_dir(APP_NAME)
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 DATA_PATH = os.path.join(DATA_DIR, "data.json")
 CLIP_DIR = os.path.join(DATA_DIR, "clips")
@@ -23,6 +26,7 @@ SHOTS_DIR = os.path.join(osapi.user_dir("pictures"), "Island")
 
 DEFAULTS = {
     "onboarded": False,         # the welcome screen was completed
+    "performance": "auto",      # auto | eco | normal (economy mode for weak PCs, see perf.py)
     "layout": dict(layout.DEFAULT),   # panel tabs, home cards, quick buttons, resting pill (see layout.py)
     "theme": "dark",            # dark | graphite | midnight | light | fog | sand | system
     "appearance": dict(APPEARANCE),   # accent, corners, opacity, shadow, animation, pill, position, font
@@ -149,18 +153,75 @@ class Settings:
             return 1.0
 
 
+def migrate_old_data():
+    """Move settings/data written by older versions from %APPDATA%/Island into DATA_DIR (once)."""
+    if not OLD_DATA_DIR or os.path.exists(SETTINGS_PATH):
+        return False
+    old_settings = os.path.join(OLD_DATA_DIR, "settings.json")
+    try:
+        with open(old_settings, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(old, dict) or not ("layout" in old or "hotkeys" in old):
+        return False     # not ours
+    import shutil
+    os.makedirs(DATA_DIR, exist_ok=True)
+    for name in ("settings.json", "data.json", "clips", "sounds"):
+        src = os.path.join(OLD_DATA_DIR, name)
+        if os.path.exists(src):
+            shutil.move(src, os.path.join(DATA_DIR, name))
+    return True
+
+
+LISTS = ("notes", "reminders", "clips", "shelf", "colors", "notifications", "events")
+
+
+def _clean_notes(notes):
+    """Fix types and drop junk: notes with no text at all, or a stray character or two with no letters."""
+    out = []
+    for n in notes if isinstance(notes, list) else []:
+        if not isinstance(n, dict):
+            continue
+        text = n.get("text")
+        text = text if isinstance(text, str) else ""
+        stripped = text.strip()
+        if not stripped or (len(stripped) <= 2 and not any(ch.isalnum() for ch in stripped)):
+            continue
+        try:
+            t = float(n.get("t") or 0)
+        except (TypeError, ValueError):
+            t = 0.0
+        out.append({"id": str(n.get("id") or os.urandom(5).hex()), "text": text, "t": t or time.time()})
+    return out
+
+
 class Store:
     """Notes, reminders, clipboard history, shelf and colour history. Saved with a debounce."""
 
     def __init__(self):
-        self.data = {"notes": [], "reminders": [], "clips": [], "shelf": [], "colors": [], "notifications": [], "events": []}
+        self.data = {k: [] for k in LISTS}
         self._lock = threading.Lock()
         self._dirty_at = 0.0
+        self.cleaned = 0
         try:
             with open(DATA_PATH, encoding="utf-8") as f:
-                self.data.update(json.load(f))
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
         except (OSError, ValueError):
             pass
+        for k in LISTS:  # a hand-edited or damaged file must not break a whole tab
+            if not isinstance(self.data.get(k), list):
+                self.data[k] = []
+        notes = _clean_notes(self.data["notes"])
+        self.cleaned = len(self.data["notes"]) - len(notes)
+        if notes != self.data["notes"]:
+            if os.path.exists(DATA_PATH):
+                import shutil
+                shutil.copy2(DATA_PATH, DATA_PATH + ".bak")   # keep what was there before the clean-up
+            self.data["notes"] = notes
+            self.touch()
 
     def __getitem__(self, key):
         return self.data[key]

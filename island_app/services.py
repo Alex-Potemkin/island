@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import bridge, osapi
+from . import bridge, osapi, perf
 
 # ---------------------------------------------------------------- media (Windows SMTC)
 
@@ -33,7 +33,7 @@ class _WinMedia(QObject):
         self._mgr = None
         self._art_key = None
         self._busy = False
-        self._timer = QTimer(self, interval=1000, timeout=self.poll)
+        self._timer = perf.timer(QTimer(self, timeout=self.poll), 1000, 2000)
         self._timer.start()
         self.poll()
 
@@ -122,7 +122,7 @@ class _LinuxMedia(QObject):
         self._art_key = None
         self._art = b""
         self._busy = False
-        self._timer = QTimer(self, interval=1000, timeout=self.poll)
+        self._timer = perf.timer(QTimer(self, timeout=self.poll), 1000, 2000)
         if osapi.have("playerctl"):
             self._timer.start()
             self.poll()
@@ -361,20 +361,25 @@ class Monitor(QObject):
         self.up = [0.0] * 60
         self.info = {}
         self._n = 0
+        self.watched = False     # the panel is open (set by the island)
         self._slow = {}          # disk / battery: refreshed every 10 s, they're the costly calls
         psutil.cpu_percent(None)
         self._net = psutil.net_io_counters()
         self._t = time.time()
-        self._timer = QTimer(self, interval=1000, timeout=self._sample)
+        self._timer = perf.timer(QTimer(self, timeout=self._sample), 1000, 2000)
         self._timer.start()
 
     def _sample(self):
         now = time.time()
-        dt = max(0.2, now - self._t)
-        net = psutil.net_io_counters()
-        down = (net.bytes_recv - self._net.bytes_recv) / dt
-        up = (net.bytes_sent - self._net.bytes_sent) / dt
-        self._net, self._t = net, now
+        if self.watched or self._n % 5 == 0 or not self.down:
+            # net_io_counters costs ~9 ms on Windows: read it every second only while someone looks
+            dt = max(0.2, now - self._t)
+            net = psutil.net_io_counters()
+            down = (net.bytes_recv - self._net.bytes_recv) / dt
+            up = (net.bytes_sent - self._net.bytes_sent) / dt
+            self._net, self._t = net, now
+        else:
+            down, up = self.down[-1], self.up[-1]
         vm = psutil.virtual_memory()
         for arr, v in ((self.cpu, psutil.cpu_percent(None)), (self.ram, vm.percent), (self.down, down), (self.up, up)):
             arr.pop(0)
@@ -509,9 +514,9 @@ class SysWatch(QObject):
         self.dl_dir = osapi.user_dir("download")
         self._partials = {}
         self._dl_names = set(self._list_dl())
-        self._fast = QTimer(self, interval=150, timeout=self._poll_fast)
+        self._fast = perf.timer(QTimer(self, timeout=self._poll_fast), 150, 300)
         self._fast.start()
-        self._slow = QTimer(self, interval=1500, timeout=self._poll_slow)
+        self._slow = perf.timer(QTimer(self, timeout=self._poll_slow), 1500, 3000)
         self._slow.start()
 
     def _poll_fast(self):

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileIconProvider, QGridLayout
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
                                QSlider, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
-from . import bridge, commands, features, layout, osapi, services
+from . import bridge, commands, features, layout, osapi, perf, services
 from . import widgets as W
 from .widgets import IconButton, button, card, hbox, label, vbox
 
@@ -189,7 +189,7 @@ class HomePage(Page):
             empty.setAlignment(Qt.AlignCenter)
             root.addWidget(empty, 1)
         root.addLayout(quick)
-        self._tick = QTimer(self, interval=1000, timeout=self.refresh)
+        self._tick = perf.timer(QTimer(self, timeout=self.refresh), 1000, 2000)
         self.listen(self.app.media.changed, lambda _s: self.refresh())
         self.listen(self.app.weather.changed, lambda _s: self.refresh())
         self.listen(self.app.reminders.changed, self.refresh)
@@ -699,18 +699,21 @@ class NotesPage(Page):
 
     def build(self):
         T = self.T
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Поиск")
+        self.search.textChanged.connect(lambda _t: self.refresh(select=self._current_id()))
         self.list = QListWidget()
-        self.list.setFixedWidth(T.s(200))
         self.list.currentRowChanged.connect(self._select)
         self.edit = QPlainTextEdit()
         self.edit.setPlaceholderText("Пишите — всё сохраняется само.\nПервая строка станет заголовком.")
         self.edit.textChanged.connect(self._changed)
-        add = IconButton("", "Новая заметка", 30, 13, self.new_note)
-        rm = IconButton("", "Удалить заметку", 30, 13, self._delete)
+        # IconButton passes `checked` to its slot: wrap, so new_note never gets False as the text
+        add = IconButton("", "Новая заметка", 30, 13, lambda: self.new_note())
+        rm = IconButton("", "Удалить заметку", 30, 13, lambda: self._delete())
         cp = IconButton("", "Скопировать текст", 30, 13,
                         lambda: self.app.copy_text(self.edit.toPlainText()))
-        left = vbox(hbox(label("Заметки", "h2"), "stretch", add, spacing=4), self.list, spacing=6)
-        left.setFixedWidth(T.s(200))
+        left = vbox(hbox(label("Заметки", "h2"), "stretch", add, spacing=4), self.search, self.list, spacing=6)
+        left.setFixedWidth(T.s(210))
         self.meta = label("", "faint")
         right = vbox(self.edit, hbox(self.meta, "stretch", cp, rm, spacing=4), spacing=6)
         lay = QHBoxLayout(self)
@@ -719,6 +722,7 @@ class NotesPage(Page):
         lay.addWidget(left)
         lay.addWidget(right, 1)
         self._loading = False
+        self._shown = []        # note ids in list order
         self.refresh()
 
     @property
@@ -728,29 +732,53 @@ class NotesPage(Page):
     def focus_target(self):
         return self.edit
 
+    @staticmethod
+    def title_of(n):
+        return (n["text"].strip().splitlines() or ["Пустая заметка"])[0][:40]
+
+    def _current_id(self):
+        row = self.list.currentRow()
+        return self._shown[row] if 0 <= row < len(self._shown) else None
+
+    def _current(self):
+        nid = self._current_id()
+        return next((n for n in self.notes if n["id"] == nid), None)
+
+    def on_show(self):
+        self.refresh(select=self._current_id())     # notes may have changed from elsewhere
+
+    def on_hide(self):
+        self._drop_empty()
+
+    def _drop_empty(self, keep=None):
+        """Notes left empty (a "+" nobody typed into) don't stay around."""
+        before = len(self.notes)
+        self.app.store.data["notes"] = [n for n in self.notes if n["text"].strip() or n["id"] == keep]
+        if len(self.notes) != before:
+            self.app.store.touch()
+            return True
+        return False
+
     def refresh(self, select=None):
         self._loading = True
         self.list.clear()
-        self.notes.sort(key=lambda n: -n.get("t", 0))
-        for n in self.notes:
-            first = (n.get("text", "").strip().splitlines() or ["Пустая заметка"])[0][:40]
-            it = QListWidgetItem(first)
-            it.setData(Qt.UserRole, n["id"])
-            self.list.addItem(it)
+        self.notes.sort(key=lambda n: -n["t"])
+        q = self.search.text().strip().lower()
+        shown = [n for n in self.notes if not q or q in n["text"].lower()]
+        self._shown = [n["id"] for n in shown]
+        for n in shown:
+            self.list.addItem(QListWidgetItem(self.title_of(n)))
         self._loading = False
-        if self.notes:
-            idx = next((i for i, n in enumerate(self.notes) if n["id"] == select), 0)
+        if shown:
+            idx = self._shown.index(select) if select in self._shown else 0
             self.list.setCurrentRow(idx)
+            self._select(idx)
         else:
+            self._loading = True
             self.edit.setPlainText("")
+            self._loading = False
             self.edit.setEnabled(False)
-            self.meta.setText("Нет заметок — нажмите +")
-
-    def _current(self):
-        it = self.list.currentItem()
-        if not it:
-            return None
-        return next((n for n in self.notes if n["id"] == it.data(Qt.UserRole)), None)
+            self.meta.setText("Ничего не найдено" if q else "Нет заметок — нажмите +")
 
     def _select(self, _row):
         if self._loading:
@@ -761,7 +789,7 @@ class NotesPage(Page):
         self.edit.setPlainText(n["text"] if n else "")
         self._loading = False
         if n:
-            self.meta.setText(dt.datetime.fromtimestamp(n.get("t", time.time())).strftime("Изменена %d.%m %H:%M"))
+            self.meta.setText(dt.datetime.fromtimestamp(n["t"]).strftime("Изменена %d.%m %H:%M"))
 
     def _changed(self):
         if self._loading:
@@ -773,23 +801,44 @@ class NotesPage(Page):
         n["t"] = time.time()
         self.app.store.touch()
         it = self.list.currentItem()
-        it.setText((n["text"].strip().splitlines() or ["Пустая заметка"])[0][:40])
+        if it:
+            it.setText(self.title_of(n))
+        self.meta.setText("Сохранено")
 
     def new_note(self, text=""):
-        import uuid
-        n = {"id": uuid.uuid4().hex[:10], "text": text, "t": time.time()}
-        self.notes.insert(0, n)
-        self.app.store.touch()
+        text = text if isinstance(text, str) else ""
+        cur = self._current()
+        if not text and cur is not None and not cur["text"].strip():
+            n = cur                          # an empty note is already open: use it
+        else:
+            import uuid
+            n = {"id": uuid.uuid4().hex[:10], "text": text, "t": time.time()}
+            self.notes.insert(0, n)
+            self.app.store.touch()
+        self._drop_empty(keep=n["id"])
+        self.search.clear()
         self.refresh(select=n["id"])
         self.app.island.focus_input(self.edit)
         self.edit.moveCursor(QTextCursor.End)
+        return n
 
     def _delete(self):
         n = self._current()
-        if n:
-            self.notes.remove(n)
+        if not n:
+            return
+        self.notes.remove(n)
+        self.app.store.touch()
+        self.refresh()
+        if n["text"].strip():
+            self.app.alert("", "Заметка удалена", "нажмите, чтобы вернуть", ttl=6,
+                           action=lambda: self._restore(n))
+
+    def _restore(self, n):
+        if all(x["id"] != n["id"] for x in self.notes):
+            self.notes.insert(0, n)
             self.app.store.touch()
-            self.refresh()
+        self.app.open_page("notes")
+        self.refresh(select=n["id"])
 
 
 # ================================================================ timer
