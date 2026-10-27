@@ -71,18 +71,24 @@ def run(app, argv):
     step(600, lambda: app.notifications.push("github", "Fix tray icon on Linux", "octo/island · pull request"), None)
     step(900, None, "61_toast_github")
     step(100, lambda: app.island.dismiss_toast(), None)
-    step(600, lambda: (app.settings.set("notifications", {"style": "pill", "sound": False}),
+    step(600, lambda: (app.settings.set("notifications", {"style": "pill", "sound": "none"}),
                        app.notifications.push("scripts", "Сборка готова", "island · 2 мин 14 с")), None)
     step(900, None, "62_pill_notify")
-    step(100, lambda: (app.clear_alert(), app.settings.set("notifications", {"sound": False})), None)
+    step(100, lambda: (app.clear_alert(), app.settings.set("notifications", {"sound": "none"})), None)
     # pages
     for i, key in enumerate(["home", "clipboard", "shelf", "notes", "timer", "reminders", "control", "tools",
                              "system", "ai", "settings"]):
         step(300, lambda k=key: isl().expand(k), None)
         step(1300 if key != "system" else 3200, None, f"1{i:01d}_{key}" if i < 10 else f"2{i - 10}_{key}")
-    for key, name in (("calendar", "26_calendar"), ("inbox", "27_inbox")):
-        step(300, lambda k=key: isl().expand(k), None)
+    for view, name in (("week", "26_calendar_week"), ("month", "28_calendar_month"), ("agenda", "29_calendar_list")):
+        step(300, lambda v=view: (isl().expand("calendar"), isl().panel.page("calendar").set_view(v)), None)
         step(1300, None, name)
+    step(300, lambda: isl().panel.page("calendar").new_event(None), None)
+    step(1000, lambda: (isl().panel.page("calendar").editor.quick.setText("обед с Сашей завтра в 13"),
+                        isl().panel.page("calendar").editor._parse()), None)
+    step(900, None, "2a_calendar_new")
+    step(300, lambda: (isl().panel.page("calendar").set_view("week"), isl().expand("inbox")), None)
+    step(1300, None, "27_inbox")
     step(200, lambda: isl().collapse(), None)
     # settings sections and first run
     for i, name in ((1, "23_settings_look"), (2, "21_settings_builder"), (3, "24_settings_notify"),
@@ -183,11 +189,16 @@ def _sample_events(app):
            ev(1, 13, 0, 60, "Обед с Сашей", "Кофейня"),
            ev(2, 18, 0, 90, "Тренировка", "", "Яндекс · iCal")]
     cal = app.calendar
-    cal.has_sources = lambda: True
+    cal.has_accounts = lambda: True
     cal.refresh = lambda: None
-    cal.events = sorted(evs, key=lambda e: e["start"])
+    cal.remote = evs + [ev(d, 10, 0, 60, "Стендап", "", "Работа · iCal") for d in range(-3, 4) if d != 0]
     cal.updated = __import__("time").time()
-    cal.changed.emit()
+    if not cal.local:
+        cal.save_event({"title": "Бассейн", "start": day + dt.timedelta(days=1, hours=19),
+                        "end": day + dt.timedelta(days=1, hours=20), "repeat": "weekly"})
+        cal.save_event({"title": "Отпуск", "start": day + dt.timedelta(days=4), "end": day + dt.timedelta(days=5),
+                        "all_day": True})
+    cal._merge()
 
 
 def _sample_data(app):

@@ -292,7 +292,7 @@ class Island(QWidget):
         big = r.height() > T.s(60)
         # soft shadow
         if (big or not T.dark) and T.shadow and osapi.IS_WINDOWS:
-            layers = 10 if big else 4
+            layers = (4 if self._anim.isActive() else 10) if big else 3
             base = T.c["shadow"] if big else T.c["shadow"] // 3
             for i in range(layers, 0, -1):
                 grow = T.s(2.6) * i
@@ -573,7 +573,7 @@ class Island(QWidget):
         x = icon.right() + P.s(12)
         right = r.right() - pad
         from .notifications import SOURCES
-        src = SOURCES.get(n.get("source"), ("", n.get("source", "")))[1]
+        src = n.get("app") or SOURCES.get(n.get("source"), ("", n.get("source", "")))[1]
         p.setFont(P.font(11))
         p.setPen(P.col("fg3"))
         top = r.top() + (P.s(10) if n.get("body") else P.s(7))

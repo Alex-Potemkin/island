@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileIconProvider, QGridLayout
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
                                QSlider, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
-from . import commands, features, layout, osapi, services
+from . import bridge, commands, features, layout, osapi, services
 from . import widgets as W
 from .widgets import IconButton, button, card, hbox, label, vbox
 
@@ -358,8 +358,7 @@ class HomePage(Page):
                                                           else f"{d.day} {MONTHS_GEN[d.month - 1]}, ")
                     subs[i].setText(day + _event_time(e))
                 else:
-                    rows[i].setText(("Подключите календарь в Настройках" if not cal.has_sources()
-                                     else "Ближайшую неделю свободно") if i == 0 and not up else "")
+                    rows[i].setText("Ближайшую неделю свободно" if i == 0 and not up else "")
                     subs[i].setText("")
         self.refreshers.append(refresh)
         self.listen(self.app.calendar.changed, refresh)
@@ -1185,6 +1184,8 @@ class SystemPage(Page):
         lay.addWidget(pc, 1)
         self.listen(self.app.monitor.tick, self._tick)
         self._n = 0
+        self._procs_busy = False
+        self.procs.setFont(QFont("Consolas" if osapi.IS_WINDOWS else "monospace", max(6, T.s(11.5))))
 
     def _tick(self):
         if not self.isVisible():
@@ -1205,13 +1206,17 @@ class SystemPage(Page):
         parts.append(f"Аптайм {up // 86400} д {up % 86400 // 3600} ч {up % 3600 // 60} м")
         self.info.setText("   ·   ".join(parts))
         self._n += 1
-        if self._n % 2 == 1:
-            ncpu = os.cpu_count() or 1
-            rows = [f"{name[:34]:<36}{cpu / ncpu:>5.1f}%   {services.human_bytes(rss):>9}"
-                    for cpu, rss, name in self.app.monitor.top_processes(8) if name not in ("System Idle Process", "System",
-                                                                                   "Idle", "Registry")]
-            self.procs.setText("\n".join(rows[:5]))
-            self.procs.setFont(QFont("Consolas", max(6, T_s(11.5))))
+        if self._n % 3 == 1 and not self._procs_busy:
+            # walking every process takes ~0.5 s on Windows: do it off the UI thread
+            self._procs_busy = True
+            bridge.run_thread(lambda: self.app.monitor.top_processes(8), self._show_procs,
+                              lambda _e: setattr(self, "_procs_busy", False))
+
+    def _show_procs(self, procs):
+        self._procs_busy = False
+        rows = [f"{name[:34]:<36}{cpu:>5.1f}%   {services.human_bytes(rss):>9}"
+                for cpu, rss, name in procs if name not in ("System Idle Process", "System", "Idle", "Registry")]
+        self.procs.setText("\n".join(rows[:5]))
 
     def on_show(self):
         self._n = 0
@@ -1476,80 +1481,6 @@ class EventRow(QWidget):
             self.setToolTip("Открыть в браузере")
 
 
-class CalendarPage(Page):
-    key, glyph, title, height = "calendar", "", "Календарь", 430
-
-    def build(self):
-        T = self.T
-        self.status = label("", "faint")
-        self.list = QListWidget()
-        self.list.setSelectionMode(QAbstractItemView.NoSelection)
-        self.list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.list.itemClicked.connect(self._open)
-        self.empty = vbox(label("Календари не подключены", "h2"),
-                          label("Google — через вход в аккаунт, Outlook, Яндекс, Apple и любые другие — по iCal-ссылке.",
-                                "muted", wrap=True),
-                          hbox(button("Подключить", "primary", lambda: self.app.open_settings("accounts")), "stretch"),
-                          "stretch", spacing=8)
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self.empty)
-        self.stack.addWidget(self.list)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(T.s(8))
-        lay.addWidget(self.stack, 1)
-        lay.addWidget(hbox(self.status, "stretch",
-                           button("Аккаунты", "ghost", lambda: self.app.open_settings("accounts")),
-                           button("Обновить", "ghost", self.app.calendar.refresh), spacing=2))
-        self.rows = []
-        self.listen(self.app.calendar.changed, self.refresh)
-        self.refresh()
-
-    def refresh(self):
-        cal = self.app.calendar
-        self.list.clear()
-        self.rows = []
-        if not cal.has_sources():
-            self.stack.setCurrentIndex(0)
-            self.status.setText("")
-            return
-        self.stack.setCurrentIndex(1)
-        now = dt.datetime.now().astimezone()
-        day = None
-        for e in cal.upcoming(14):
-            d = max(e["start"].date(), dt.date.today())
-            if d != day:
-                day = d
-                it = QListWidgetItem(_day_title(d))
-                it.setFlags(Qt.NoItemFlags)
-                it.setFont(W.T.font(12, 600))
-                it.setForeground(W.T.col("fg2"))
-                self.list.addItem(it)
-                self.rows.append(None)
-            it = QListWidgetItem()
-            it.setSizeHint(QSize(10, W.T.s(46)))
-            self.list.addItem(it)
-            self.list.setItemWidget(it, EventRow(e, now))
-            self.rows.append(e)
-        if not self.rows:
-            it = QListWidgetItem("На две недели вперёд событий нет")
-            it.setFlags(Qt.NoItemFlags)
-            self.list.addItem(it)
-        parts = []
-        if cal.updated:
-            parts.append("обновлено " + time.strftime("%H:%M", time.localtime(cal.updated)))
-        if cal.errors:
-            parts.append("ошибка: " + "; ".join(f"{k}: {v}" if k else v for k, v in cal.errors.items())[:120])
-        self.status.setText(" · ".join(parts))
-
-    def _open(self, it):
-        row = self.list.row(it)
-        e = self.rows[row] if row < len(self.rows) else None
-        if e and e.get("url"):
-            import webbrowser
-            webbrowser.open(e["url"])
-
-
 # ================================================================ notification history
 
 
@@ -1563,6 +1494,10 @@ class InboxRow(QWidget):
         ic = label(n.get("glyph") or "", "icon")
         ic.setFixedWidth(T.s(20))
         lay.addWidget(ic)
+        if n.get("app"):
+            app = label(n["app"], "faint")
+            app.setFixedWidth(T.s(90))
+            lay.addWidget(app)
         title = label("")
         title.setFont(T.font(13, 500))
         title.setText(title.fontMetrics().elidedText(n.get("title", ""), Qt.ElideRight, T.s(420)))
@@ -1610,6 +1545,8 @@ class InboxPage(Page):
         if row < len(self.items):
             self.app.notifications.open(self.items[row])
 
+
+from .calendar_ui import CalendarPage  # noqa: E402  (uses the helpers above)
 
 PAGES = {cls.key: cls for cls in (HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage,
                                   ControlPage, ToolsPage, SystemPage, AIPage, CalendarPage, InboxPage)}

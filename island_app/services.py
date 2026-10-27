@@ -360,6 +360,8 @@ class Monitor(QObject):
         self.down = [0.0] * 60
         self.up = [0.0] * 60
         self.info = {}
+        self._n = 0
+        self._slow = {}          # disk / battery: refreshed every 10 s, they're the costly calls
         psutil.cpu_percent(None)
         self._net = psutil.net_io_counters()
         self._t = time.time()
@@ -377,31 +379,46 @@ class Monitor(QObject):
         for arr, v in ((self.cpu, psutil.cpu_percent(None)), (self.ram, vm.percent), (self.down, down), (self.up, up)):
             arr.pop(0)
             arr.append(v)
-        info = {"ram_used": vm.used, "ram_total": vm.total, "uptime": now - psutil.boot_time()}
-        try:
-            du = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\")
-            info["disk"] = (du.used, du.total)
-        except OSError:
-            pass
-        try:
-            b = psutil.sensors_battery()
-            if b:
-                info["battery"] = (b.percent, b.power_plugged, b.secsleft)
-        except Exception:
-            pass
-        self.info = info
+        if self._n % 10 == 0:
+            slow = {}
+            try:
+                du = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\" if os.name == "nt" else "/")
+                slow["disk"] = (du.used, du.total)
+            except OSError:
+                pass
+            try:
+                b = psutil.sensors_battery()
+                if b:
+                    slow["battery"] = (b.percent, b.power_plugged, b.secsleft)
+            except Exception:
+                pass
+            self._slow = slow
+        self._n += 1
+        self.info = {"ram_used": vm.used, "ram_total": vm.total, "uptime": now - psutil.boot_time(), **self._slow}
         self.tick.emit()
 
     def top_processes(self, n=5):
-        procs = []
-        for p in psutil.process_iter(["name", "cpu_percent", "memory_info"]):
-            try:
-                procs.append((p.info["cpu_percent"] or 0.0, p.info["memory_info"].rss if p.info["memory_info"] else 0,
-                              p.info["name"] or "?"))
-            except (psutil.Error, AttributeError):
-                pass
-        procs.sort(reverse=True)
-        return procs[:n]
+        """(machine CPU %, memory, name) of the busiest processes since the previous call."""
+        now = time.monotonic()
+        if hasattr(osapi, "process_snapshot"):
+            # Windows: one NtQuerySystemInformation call (~15 ms) instead of psutil's call per process (~1 s)
+            snap = osapi.process_snapshot()
+            prev, t0 = getattr(self, "_snap", ({}, now))
+            self._snap = (snap, now)
+            wall = max(1e-3, now - t0) * 1e7 * (psutil.cpu_count() or 1)
+            rows = [(100.0 * max(0, cpu - prev[pid][1]) / wall if pid in prev else 0.0, ws, name)
+                    for pid, (name, cpu, ws) in snap.items() if pid]
+        else:
+            ncpu = psutil.cpu_count() or 1
+            rows = []
+            for p in psutil.process_iter(["name", "cpu_percent", "memory_info"]):
+                try:
+                    mi = p.info["memory_info"]
+                    rows.append(((p.info["cpu_percent"] or 0.0) / ncpu, mi.rss if mi else 0, p.info["name"] or "?"))
+                except (psutil.Error, AttributeError):
+                    pass
+        rows.sort(key=lambda r: (-r[0], -r[1]))
+        return rows[:n]
 
 
 def human_bytes(n, per_sec=False):

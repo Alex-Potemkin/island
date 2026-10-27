@@ -496,3 +496,42 @@ def get_brightness():
 def set_brightness(value):
     _ps(f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods)"
         f".WmiSetBrightness(1,{int(value)})")
+
+
+# ---------------------------------------------------------------- process list in one system call
+
+_ntdll = ctypes.WinDLL("ntdll")
+_buf = None
+
+
+def process_snapshot():
+    """{pid: (name, cpu_time_100ns, working_set_bytes)} for every process, from one
+    NtQuerySystemInformation(SystemProcessInformation) call — psutil needs one per process."""
+    global _buf
+    size = ctypes.c_ulong(0)
+    for _ in range(4):
+        if _buf is None or len(_buf) < size.value:
+            _buf = ctypes.create_string_buffer(max(size.value + 65536, 512 * 1024))
+        status = _ntdll.NtQuerySystemInformation(5, _buf, len(_buf), ctypes.byref(size))
+        if status == 0:
+            break
+        if status & 0xFFFFFFFF != 0xC0000004:  # STATUS_INFO_LENGTH_MISMATCH
+            return {}
+    else:
+        return {}
+    out, off, base = {}, 0, ctypes.addressof(_buf)
+    while True:
+        p = base + off
+        nxt = ctypes.c_ulong.from_address(p).value
+        user = ctypes.c_longlong.from_address(p + 40).value
+        kernel = ctypes.c_longlong.from_address(p + 48).value
+        name_len = ctypes.c_ushort.from_address(p + 56).value
+        name_ptr = ctypes.c_void_p.from_address(p + 64).value
+        pid = ctypes.c_void_p.from_address(p + 80).value or 0
+        ws = ctypes.c_size_t.from_address(p + 144).value
+        name = ctypes.wstring_at(name_ptr, name_len // 2) if name_ptr and name_len else "System Idle Process"
+        out[pid] = (name, user + kernel, ws)
+        if not nxt:
+            break
+        off += nxt
+    return out

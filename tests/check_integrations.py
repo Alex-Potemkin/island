@@ -184,7 +184,7 @@ def main():
               stored.startswith("dpapi:") if osapi.IS_WINDOWS else stored == "RT1", stored[:12])
         app.calendar.google._access = None          # force the refresh-token path
         s.set("accounts.ics", [{"name": "Работа", "url": base + "/feed.ics"}])
-        s.set("notifications", {"style": "card", "duration": 2, "sound": False, "event_lead": 10, "sources": {}})
+        s.set("notifications", {"style": "card", "duration": 6, "sound": "none", "event_lead": 10, "sources": {}})
         app.calendar.refresh()
 
     def after_refresh():
@@ -202,7 +202,7 @@ def main():
 
     def after_timeout():
         check("card disappears after its duration", app.island.mode != "toast", app.island.mode)
-        s.set("notifications", {"style": "card", "duration": 8, "sound": False, "event_lead": 10,
+        s.set("notifications", {"style": "card", "duration": 8, "sound": "none", "event_lead": 10,
                                 "sources": {"github": "pill"}})
         app.github.set_token("ghp_test")
 
@@ -219,13 +219,13 @@ def main():
     def after_github2():
         check("GitHub: second poll uses If-Modified-Since (304)", app.github.error == "" and STATE["gh_calls"] >= 2)
         app.clear_alert()
-        s.set("notifications", {"style": "off", "sound": False, "sources": {}})
+        s.set("notifications", {"style": "off", "sound": "none", "sources": {}})
         before = len(app.notifications.history)
         app.notifications.push("scripts", "Сборка", "готово")
         check("off: kept in history only", len(app.notifications.history) == before + 1
               and app.island.mode != "toast" and "alert" not in app.activities)
         h = dt.datetime.now().hour
-        s.set("notifications", {"style": "card", "duration": 3, "sound": False, "sources": {},
+        s.set("notifications", {"style": "card", "duration": 3, "sound": "none", "sources": {},
                                 "quiet": {"enabled": True, "from": h, "to": (h + 1) % 24}})
         app.notifications.push("calendar", "Тихо", "в тихие часы")
         check("quiet hours: no card", app.island.mode != "toast")
@@ -242,7 +242,7 @@ def main():
     step(300, google_connect)
     step(2500, after_connect)
     step(3000, after_refresh)
-    step(2600, after_timeout)
+    step(6500, after_timeout)
     step(2500, after_github)
     step(1500, after_github2)
     step(300, click)

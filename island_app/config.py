@@ -54,8 +54,9 @@ DEFAULTS = {
     "ai": {"model": "claude-sonnet-5-5", "api_key": "", "translate_to": "ru"},
     "weather": {"enabled": True, "city": ""},
     "hooks": {"enabled": True, "port": 47811},
-    "notifications": {"style": "card", "duration": 6, "sound": True, "event_lead": 10,
-                      "quiet": {"enabled": False, "from": 22, "to": 8}, "sources": {}},
+    "notifications": {"style": "card", "duration": 6, "sound": "drop", "volume": 70, "sound_file": "",
+                      "event_lead": 10, "quiet": {"enabled": False, "from": 22, "to": 8}, "sources": {}, "sounds": {},
+                      "apps": True, "muted_apps": []},
     "accounts": {"google": {"client_id": "", "client_secret": "", "refresh": "", "email": ""},
                  "github": {"token": ""}, "ics": []},
     "pomodoro": {"work": 25, "short": 5, "long": 15, "cycles": 4},
@@ -152,7 +153,7 @@ class Store:
     """Notes, reminders, clipboard history, shelf and colour history. Saved with a debounce."""
 
     def __init__(self):
-        self.data = {"notes": [], "reminders": [], "clips": [], "shelf": [], "colors": [], "notifications": []}
+        self.data = {"notes": [], "reminders": [], "clips": [], "shelf": [], "colors": [], "notifications": [], "events": []}
         self._lock = threading.Lock()
         self._dirty_at = 0.0
         try:

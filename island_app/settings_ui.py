@@ -294,11 +294,9 @@ class SettingsPage(Page):
     def build(self):
         T = self.T
         self.stack = QStackedWidget()
-        self.scrolls = []
-        for key, _title in self.SECTIONS:
-            scroll = getattr(self, "_" + key)().done()
-            self.scrolls.append(scroll)
-            self.stack.addWidget(scroll)
+        self.scrolls = [None] * len(self.SECTIONS)     # built on first visit (the whole set takes ~0.7 s)
+        for _ in self.SECTIONS:
+            self.stack.addWidget(QWidget())
         state = self.app.ui_state
         idx = state.get("settings_section", 0)
         tabs = chip_group([(str(i), t) for i, (_k, t) in enumerate(self.SECTIONS)], str(idx),
@@ -309,18 +307,29 @@ class SettingsPage(Page):
         lay.setSpacing(T.s(10))
         lay.addWidget(tabs)
         lay.addWidget(self.stack, 1)
+        scroll_to = state.get("settings_scroll", 0)
         self._section(idx)
-        QTimer.singleShot(0, lambda: self.scrolls[idx].verticalScrollBar().setValue(state.get("settings_scroll", 0)))
-        for i, sc in enumerate(self.scrolls):
-            sc.verticalScrollBar().valueChanged.connect(
-                lambda v, i=i: self.stack.currentIndex() == i and state.__setitem__("settings_scroll", v))
+        QTimer.singleShot(0, lambda: self.scrolls[idx].verticalScrollBar().setValue(scroll_to))
+
+    def _build_section(self, i):
+        if self.scrolls[i] is None:
+            scroll = getattr(self, "_" + self.SECTIONS[i][0])().done()
+            old = self.stack.widget(i)
+            self.stack.insertWidget(i, scroll)
+            self.stack.removeWidget(old)
+            old.deleteLater()
+            self.scrolls[i] = scroll
+            scroll.verticalScrollBar().valueChanged.connect(
+                lambda v, i=i: self.stack.currentIndex() == i and self.app.ui_state.__setitem__("settings_scroll", v))
+        return self.scrolls[i]
 
     def _section(self, i):
         for j, chip in enumerate(getattr(self, "section_chips", [])):
             chip.setChecked(j == i)
+        scroll = self._build_section(i)
         self.stack.setCurrentIndex(i)
         self.app.ui_state["settings_section"] = i
-        self.app.ui_state["settings_scroll"] = self.scrolls[i].verticalScrollBar().value()
+        self.app.ui_state["settings_scroll"] = scroll.verticalScrollBar().value()
 
     # ------------------------------------------------------------ Основное
 
@@ -474,15 +483,15 @@ class SettingsPage(Page):
     # ------------------------------------------------------------ Уведомления
 
     def _notify(self):
-        from .notifications import DEFAULTS, SOURCES, STYLES
+        from . import sounds as SND
+        from .notifications import SOURCES, STYLES
         s = self.app.settings
-        cfg = dict(DEFAULTS)
-        cfg.update(s.get("notifications") or {})
+        nc = self.app.notifications
+        cfg = nc.cfg
         f = _Form()
 
         def put(key, value):
-            c = dict(DEFAULTS)
-            c.update(s.get("notifications") or {})
+            c = nc.cfg
             c[key] = value
             s.set("notifications", c)
 
@@ -490,20 +499,71 @@ class SettingsPage(Page):
         f.row("Стиль по умолчанию", "", chip_group(list(STYLES.items()), cfg["style"], lambda k: put("style", k)))
         f.row("Сколько держать", "", slider(2, 15, int(cfg["duration"]), lambda v: f"{v} с",
                                             lambda v: put("duration", v)))
-        snd = W.Toggle(bool(cfg["sound"]))
-        snd.toggled.connect(lambda on: put("sound", on))
-        f.row("Звук", "", snd)
         f.add(hbox(button("Показать пример", None, self._sample), "stretch"))
 
-        f.title("Источники", "Для каждого — свой стиль или выключить.")
+        f.title("Звук", "Встроенные звуки или свой .wav. Значок ▶ — послушать.")
+        sound_names = list(SND.SOUNDS.items()) + [("file", "Свой файл…")]
+
+        def sound_box(current, on_pick, with_default=False):
+            box = QComboBox()
+            items = ([("default", "Как обычно")] if with_default else []) + sound_names
+            for k, t in items:
+                box.addItem(t, k)
+            keys = [k for k, _t in items]
+            box.setCurrentIndex(keys.index(current) if current in keys else 0)
+            box.currentIndexChanged.connect(lambda i: on_pick(box.itemData(i)))
+            return box
+
+        def pick_main(k):
+            if k == "file" and not self._choose_sound_file():
+                return
+            put("sound", k)
+            nc.play(k)
+        main = sound_box(cfg["sound"], pick_main)
+        f.row("Звук уведомлений", "", hbox(main, IconButton("\uE768", "Послушать", 30, 12,
+                                                            lambda: nc.play(main.currentData())), spacing=6))
+        f.row("Громкость", "", slider(5, 100, int(cfg["volume"]), lambda v: f"{v}%",
+                                      lambda v: (put("volume", v), nc.play(nc.cfg["sound"], v))))
+        self.sound_file_label = label(cfg.get("sound_file") or "файл не выбран", "faint")
+        f.row("Свой файл", "", hbox(self.sound_file_label, button("Выбрать…", "ghost", self._choose_sound_file),
+                                    spacing=6))
+
+        f.title("Источники", "Для каждого — свой стиль и свой звук.")
         sources = dict(cfg.get("sources") or {})
+        snds = dict(cfg.get("sounds") or {})
 
         def put_source(src, style):
             sources[src] = style
             put("sources", dict(sources))
+
+        def put_sound(src, k):
+            snds[src] = k
+            put("sounds", dict(snds))
+            nc.play(nc.sound_for(src))
         opts = [("default", "Как обычно")] + list(STYLES.items())
         for key, (glyph, title) in SOURCES.items():
-            f.row(title, "", chip_group(opts, sources.get(key, "default"), lambda k, src=key: put_source(src, k)))
+            f.row(title, "", hbox(chip_group(opts, sources.get(key, "default"), lambda k, src=key: put_source(src, k)),
+                                  sound_box(snds.get(key, "default"), lambda k, src=key: put_sound(src, k), True),
+                                  spacing=6))
+
+        f.title("Уведомления других приложений",
+                "Всё, что приходит в центр уведомлений " + ("Windows" if osapi.IS_WINDOWS else "системы")
+                + " (мессенджеры, почта, браузер, телефон через «Связь с телефоном»), появляется и в пилюле.")
+        apps = W.Toggle(bool(cfg.get("apps", True)))
+        apps.toggled.connect(lambda on: (put("apps", on), self.app.system_notifications.poll()))
+        f.row("Показывать в пилюле", "" if self.app.system_notifications.available else "недоступно на этой системе",
+              apps)
+        seen = sorted(self.app.system_notifications.seen_apps | set(cfg.get("muted_apps") or []))
+        if seen:
+            muted = set(cfg.get("muted_apps") or [])
+            f.add(label("Отключить для приложений:", "faint"))
+            f.add(chip_grid([(a, a) for a in seen], [a for a in seen if a in muted],
+                            lambda keys: put("muted_apps", list(keys)), cols=5))
+        if osapi.IS_WINDOWS:
+            f.add(hbox(label("Чтобы Windows не показывала свой баннер вдобавок к пилюле, выключите баннеры "
+                             "в параметрах уведомлений.", "faint", wrap=True),
+                       button("Открыть параметры", "ghost", lambda: osapi.open_path("ms-settings:notifications")),
+                       spacing=6))
 
         f.title("Календарь")
         f.row("Напоминать о событии", "", chip_group([("0", "в момент начала"), ("5", "за 5 мин"), ("10", "за 10"),
@@ -527,6 +587,23 @@ class SettingsPage(Page):
         f.row("Включить", "", qt)
         f.row("С … до …", "", hbox(a, label("—", "muted"), b, spacing=6))
         return f
+
+    def _choose_sound_file(self):
+        from PySide6.QtWidgets import QFileDialog
+        self.app.island.hold(True)
+        try:
+            path, _ = QFileDialog.getOpenFileName(self, "Звук уведомления", "", "WAV (*.wav)")
+        finally:
+            self.app.island.hold(False)
+        if not path:
+            return False
+        c = self.app.notifications.cfg
+        c["sound_file"] = path
+        c["sound"] = "file"
+        self.app.settings.set("notifications", c)
+        if hasattr(self, "sound_file_label"):
+            self.sound_file_label.setText(path)
+        return True
 
     def _sample(self):
         self.app.notifications.push("calendar", "Созвон по дизайну", "через 10 мин · 15:00 · Zoom")

@@ -36,6 +36,7 @@ MAP = {
     # extra glyphs used by the layout editor
     0xE70D: ["expand_more"], 0xE70E: ["expand_less"], 0xE8CB: ["swap_vert"], 0xE7C4: ["dashboard"],
     0xE72C: ["refresh"], 0xE946: ["info"], 0xE787: ["calendar_today", "event"], 0xE700: ["menu"],
+    0xE76B: ["chevron_left"], 0xE76C: ["chevron_right"],
 }
 
 

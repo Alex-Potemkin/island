@@ -65,8 +65,9 @@ class App(QObject):
         self.index = features.Index()
         self.ai = features.AIChat(self.settings)
         self.notifications = Notifications(self)
-        self.calendar = integrations.CalendarService(self.settings, self.notifications.push)
+        self.calendar = integrations.CalendarService(self.settings, self.notifications.push, self.store)
         self.github = integrations.GitHubService(self.settings, self.notifications.push)
+        self.system_notifications = integrations.SystemNotifications(self.settings, self.notifications.push)
         self.hooks = services.HookServer(int(self.settings.get("hooks.port", 47811))) \
             if self.settings.get("hooks.enabled", True) else None
         self._alert_timer = QTimer(self, singleShot=True, timeout=self.clear_alert)

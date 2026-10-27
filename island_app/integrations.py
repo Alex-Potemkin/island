@@ -6,8 +6,15 @@ on Linux. Endpoints are class attributes so tests can point them at a local fake
 import base64
 import datetime as dt
 import hashlib
+import html
 import json
+import os
+import re
 import secrets
+import shutil
+import sqlite3
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -299,14 +306,20 @@ def parse_ics(text, start, end, source="iCal"):
 
 
 class CalendarService(QObject):
-    """Merges Google + iCal events, refreshes every 10 minutes, and raises "starts soon" notifications."""
+    """Merges the local calendar ("Мой", editable) with Google + iCal (read-only), refreshes remote calendars
+    every 10 minutes and raises "starts soon" notifications."""
     changed = Signal()
+    PAST_DAYS, FUTURE_DAYS = 62, 124        # window kept in memory: enough to page through months
+    REPEATS = {"none": "Не повторять", "daily": "Каждый день", "weekly": "Каждую неделю",
+               "monthly": "Каждый месяц", "yearly": "Каждый год"}
 
-    def __init__(self, settings, notify):
+    def __init__(self, settings, notify, store=None):
         super().__init__()
         self.settings = settings
         self.notify = notify
+        self.store = store
         self.google = GoogleAccount(settings)
+        self.remote = []
         self.events = []
         self.errors = {}
         self.updated = 0.0
@@ -317,27 +330,35 @@ class CalendarService(QObject):
         self._refresh_timer.start()
         self._soon = QTimer(self, interval=30 * 1000, timeout=self._check_soon)
         self._soon.start()
+        self._merge()
         QTimer.singleShot(2500, self.refresh)
 
+    # -------- sources
     def ics_list(self):
         return [c for c in (self.settings.get("accounts.ics") or []) if c.get("url")]
 
-    def has_sources(self):
+    def has_accounts(self):
         return self.google.is_connected() or bool(self.ics_list())
 
+    def has_sources(self):
+        return True     # the local calendar is always there
+
+    def window(self):
+        today = dt.datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        return today - dt.timedelta(days=self.PAST_DAYS), today + dt.timedelta(days=self.FUTURE_DAYS)
+
     def refresh(self):
-        if self._busy or not self.has_sources():
-            if not self.has_sources():
-                self.events, self.errors = [], {}
-                self.changed.emit()
+        if self._busy:
+            return
+        if not self.has_accounts():
+            self.remote, self.errors = [], {}
+            self._merge()
             return
         self._busy = True
         bridge.run_thread(self._fetch, self._done, self._fail)
 
     def _fetch(self):
-        now = dt.datetime.now(LOCAL_TZ)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(days=1)
-        end = start + dt.timedelta(days=40)
+        start, end = self.window()
         events, errors = [], {}
         if self.google.is_connected():
             try:
@@ -353,14 +374,13 @@ class CalendarService(QObject):
                 events += parse_ics(body.decode("utf-8", "replace"), start, end, cal.get("name") or "iCal")
             except Exception as exc:  # noqa: BLE001
                 errors[cal.get("name") or url] = str(exc)
-        events.sort(key=lambda e: (e["start"], not e["all_day"]))
         return events, errors
 
     def _done(self, res):
         self._busy = False
-        self.events, self.errors = res
+        self.remote, self.errors = res
         self.updated = time.time()
-        self.changed.emit()
+        self._merge()
         self._check_soon()
 
     def _fail(self, exc):
@@ -368,10 +388,73 @@ class CalendarService(QObject):
         self.errors = {"": str(exc)}
         self.changed.emit()
 
+    # -------- the local calendar
+    @property
+    def local(self):
+        return self.store.data.setdefault("events", []) if self.store is not None else []
+
+    def _expand_local(self, start, end):
+        from dateutil.rrule import DAILY, MONTHLY, WEEKLY, YEARLY, rrule
+        freq = {"daily": DAILY, "weekly": WEEKLY, "monthly": MONTHLY, "yearly": YEARLY}
+        out = []
+        for e in self.local:
+            st = dt.datetime.fromisoformat(e["start"]).astimezone(LOCAL_TZ)
+            en = dt.datetime.fromisoformat(e["end"]).astimezone(LOCAL_TZ)
+            dur = max(en - st, dt.timedelta(minutes=1))
+            if e.get("repeat", "none") in freq:
+                starts = rrule(freq[e["repeat"]], dtstart=st).between(start - dur, end, inc=True)
+            else:
+                starts = [st]
+            for s in starts:
+                if s + dur > start and s < end:
+                    ev = event(e["title"], s, s + dur, e.get("all_day", False), e.get("location", ""), "Мой", "",
+                               f"local:{e['id']}:{s.isoformat()}")
+                    ev.update(local=True, lid=e["id"], repeat=e.get("repeat", "none"))
+                    out.append(ev)
+        return out
+
+    def _merge(self):
+        start, end = self.window()
+        self.events = sorted(self.remote + self._expand_local(start, end),
+                             key=lambda e: (e["start"], not e["all_day"]))
+        self.changed.emit()
+
+    def save_event(self, data, lid=None):
+        """Create (lid=None) or update a local event. data: title, start, end (aware datetimes), all_day,
+        location, repeat."""
+        rec = {"title": data.get("title") or "Без названия", "start": data["start"].isoformat(),
+               "end": data["end"].isoformat(), "all_day": bool(data.get("all_day")),
+               "location": data.get("location", ""), "repeat": data.get("repeat", "none")}
+        if lid:
+            for e in self.local:
+                if e["id"] == lid:
+                    e.update(rec)
+                    break
+        else:
+            import uuid
+            rec["id"] = uuid.uuid4().hex[:10]
+            self.local.append(rec)
+            lid = rec["id"]
+        self.store.touch()
+        self._merge()
+        return lid
+
+    def delete_event(self, lid):
+        self.store.data["events"] = [e for e in self.local if e["id"] != lid]
+        self.store.touch()
+        self._merge()
+
+    def local_record(self, lid):
+        return next((e for e in self.local if e["id"] == lid), None)
+
+    # -------- queries
     def upcoming(self, days=7):
         now = dt.datetime.now(LOCAL_TZ)
         end = now + dt.timedelta(days=days)
         return [e for e in self.events if e["end"] > now and e["start"] < end]
+
+    def between(self, start, end):
+        return [e for e in self.events if e["end"] > start and e["start"] < end]
 
     def on_day(self, day):
         return [e for e in self.events if e["start"].date() <= day <= (e["end"] - dt.timedelta(seconds=1)).date()]
@@ -487,3 +570,146 @@ def html_url(api_url):
     u = api_url.replace("https://api.github.com/repos/", "https://github.com/", 1)
     return u.replace("/pulls/", "/pull/").replace("/commits/", "/commit/")
 
+
+# ================================================================ notifications from other apps
+
+
+WPN_DB = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db") if os.name == "nt" else ""
+_OWN = ("island", "python", "pythonw")
+
+
+def app_name(primary_id, display=""):
+    """Readable app name from a Windows notification handler id (AUMID)."""
+    if display:
+        return display
+    pid = primary_id.split("!")[-1] if "!" in primary_id and primary_id.split("!")[-1] not in ("App", "app") \
+        else primary_id.split("!")[0]
+    pid = pid.split("_")[0]
+    if "\\" in pid or "/" in pid:
+        pid = re.split(r"[\\/]", pid)[-1]
+    pid = re.sub(r"\.exe$", "", pid, flags=re.I)
+    parts = [p for p in pid.split(".") if p and p.lower() not in ("microsoft", "windows", "com", "app")]
+    return (parts[-1] if parts else pid) or "Приложение"
+
+
+def toast_texts(payload):
+    """Text lines of a toast XML payload (title first)."""
+    s = payload.decode("utf-8", "replace") if isinstance(payload, (bytes, bytearray)) else str(payload or "")
+    texts = [html.unescape(re.sub(r"<[^>]+>", "", t)).strip() for t in re.findall(r"<text[^>]*>(.*?)</text>", s, re.S)]
+    return [t for t in texts if t]
+
+
+def read_windows_toasts(db_path, after_id):
+    """New toasts since Notification.Id `after_id`: (max_id, [(id, app, title, body)]). Read-only."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+    try:
+        if after_id is None:  # first look: start from now, don't replay the history
+            row = con.execute("SELECT MAX(Id) FROM Notification").fetchone()
+            return (row[0] or 0), []
+        rows = con.execute(
+            "SELECT n.Id, h.PrimaryId, n.Payload, "
+            " (SELECT AssetValue FROM HandlerAssets a WHERE a.HandlerId = h.RecordId AND a.AssetKey = 'DisplayName') "
+            "FROM Notification n JOIN NotificationHandler h ON h.RecordId = n.HandlerId "
+            "WHERE n.Type = 'toast' AND n.Id > ? ORDER BY n.Id", (after_id,)).fetchall()
+        top = con.execute("SELECT MAX(Id) FROM Notification").fetchone()[0] or after_id
+    finally:
+        con.close()
+    out = []
+    for nid, primary, payload, display in rows:
+        if any(o in (primary or "").lower() for o in _OWN):
+            continue
+        texts = toast_texts(payload)
+        if texts:
+            out.append((nid, app_name(primary or "", display or ""), texts[0], " · ".join(texts[1:3])))
+    return max(top, after_id), out
+
+
+def parse_dbus_notify(lines):
+    """Notify() calls from `dbus-monitor` output: [(app, summary, body)]."""
+    out, cur = [], None
+    for line in lines:
+        line = line.strip()
+        if "member=Notify" in line and line.startswith("method call"):
+            cur = []
+            continue
+        if cur is not None:
+            m = re.match(r'string "(.*)"$', line)
+            if m:
+                cur.append(m.group(1).replace('\\"', '"'))
+                if len(cur) == 4:  # app_name, app_icon, summary, body
+                    app, _icon, summary, body = cur
+                    if not any(o in app.lower() for o in _OWN):
+                        out.append((app or "Приложение", summary, body))
+                    cur = None
+            elif line.startswith(("method call", "signal", "method return", "error")):
+                cur = None
+    return out
+
+
+class SystemNotifications(QObject):
+    """Mirrors other apps' notifications into the island (setting notifications.apps)."""
+
+    def __init__(self, settings, notify):
+        super().__init__()
+        self.settings = settings
+        self.notify = notify
+        self.seen_apps = set()
+        self._last_id = None
+        self._busy = False
+        self._proc = None
+        self.available = bool(WPN_DB and os.path.exists(WPN_DB)) or bool(shutil.which("dbus-monitor"))
+        self._timer = QTimer(self, interval=1500, timeout=self.poll)
+        self._timer.start()
+        self.poll()
+
+    @property
+    def enabled(self):
+        return bool(self.settings.get("notifications.apps", True))
+
+    def muted(self):
+        return set(self.settings.get("notifications.muted_apps") or [])
+
+    def _deliver(self, items):
+        self._busy = False
+        muted = self.muted()
+        for app, title, body in items:
+            self.seen_apps.add(app)
+            if app not in muted and self.enabled:
+                self.notify("apps", title, body, app=app)
+
+    def poll(self):
+        if not self.enabled:
+            self._last_id = None
+            self.stop()
+            return
+        if os.name == "nt":
+            if self._busy or not os.path.exists(WPN_DB):
+                return
+            self._busy = True
+
+            def work():
+                self._last_id, rows = read_windows_toasts(WPN_DB, self._last_id)
+                return [(app, title, body) for _i, app, title, body in rows]
+            bridge.run_thread(work, self._deliver, lambda _e: setattr(self, "_busy", False))
+        elif self._proc is None and shutil.which("dbus-monitor") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+            self._proc = subprocess.Popen(
+                ["dbus-monitor", "--session", "interface='org.freedesktop.Notifications',member='Notify'"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            threading.Thread(target=self._read_dbus, args=(self._proc,), daemon=True).start()
+
+    def _read_dbus(self, proc):
+        buf = []
+        for line in proc.stdout:
+            buf.append(line)
+            if len(buf) > 40 or (line.strip().startswith("string") and len(buf) > 5):
+                items = parse_dbus_notify(buf)
+                if items:
+                    bridge.on_main(self._deliver, items)
+                    buf = []
+                elif len(buf) > 40:
+                    buf = buf[-10:]
+
+    def stop(self):
+        if self._proc:
+            self._proc.terminate()
+            self._proc = None
