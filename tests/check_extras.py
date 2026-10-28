@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HOME = tempfile.mkdtemp(prefix="island-extras-")
@@ -229,10 +230,15 @@ def main():
         rec.stop()
         check("stopping: «Сохраняю…» in the pill", app.activities.get("rec", {}).get("busy"))
 
-    state = {}
+    state = {"errors": []}
+    app.recorder.failed.connect(state["errors"].append)
 
     def record_saved():
         rec = app.recorder
+        if rec.busy and time.monotonic() - state.setdefault("wait", time.monotonic()) < 60:
+            return "wait"                 # slow CI machines take a while to encode
+        state.pop("wait", None)
+        check("no recording errors", not state["errors"], state["errors"])
         hist = app.notifications.history
         saved = [n for n in hist if n["title"] == "Запись сохранена"]
         path = os.path.join(SHOTS, saved[0]["body"]) if saved else ""
@@ -248,6 +254,9 @@ def main():
         app.recorder.stop()
 
     def record_gif_saved():
+        if app.recorder.busy and time.monotonic() - state.setdefault("wait", time.monotonic()) < 90:
+            return "wait"
+        check("no GIF errors", not state["errors"], state["errors"])
         saved = [n for n in app.notifications.history if n["title"] == "Запись сохранена"]
         path = os.path.join(SHOTS, saved[0]["body"]) if saved else ""
         check("GIF saved", len(saved) == state.get("n", 0) + 1 and path.endswith(".gif")
@@ -270,9 +279,9 @@ def main():
     step(300, acrylic_solid)
     step(200, record)
     step(1600, record_stop)
-    step(4000, record_saved)
+    step(500, record_saved)
     step(1200, record_gif_stop)
-    step(6000, record_gif_saved)
+    step(500, record_gif_saved)
 
     def run(i=0):
         if i >= len(steps):
@@ -283,7 +292,9 @@ def main():
 
         def go():
             try:
-                fn()
+                if fn() == "wait":             # the step isn't ready yet: ask again shortly
+                    QTimer.singleShot(250, go)
+                    return
             except Exception as exc:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()
