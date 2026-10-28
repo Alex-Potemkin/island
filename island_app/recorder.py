@@ -145,7 +145,9 @@ class Recorder(QObject):
 
     def _finish(self):
         self._thread.join(timeout=30)
-        err = self._proc.communicate(timeout=120)[1].decode("utf-8", "replace").strip()
+        # the writer thread has closed ffmpeg's stdin; communicate() would try to flush it again
+        err = self._proc.stderr.read().decode("utf-8", "replace").strip()
+        self._proc.wait(timeout=120)
         if self._proc.returncode != 0 or not os.path.exists(self.path_mp4):
             raise RuntimeError(err.splitlines()[-1] if err else "ffmpeg завершился с ошибкой")
         if self.fmt != "gif":
