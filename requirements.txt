@@ -7,7 +7,7 @@ python-dateutil>=2.8   # recurring events in iCal calendars
 tzdata>=2024.1         # time zones for iCal on Windows
 imageio-ffmpeg>=0.5     # ffmpeg for screen recording (MP4 / GIF)
 # Windows: media (SMTC), Wi-Fi/Bluetooth, OCR
-winrt-runtime>=2.0; sys_platform == "win32"
+winrt-runtime>=4.0.3; sys_platform == "win32"
 winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
 winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
