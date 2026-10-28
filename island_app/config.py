@@ -13,7 +13,7 @@ from . import layout, osapi
 from .theme import APPEARANCE
 
 APP_NAME = "Island"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 try:   # written by build_exe.py from the release tag (CI) — e.g. "1.2.0" or "1.1.0-nightly.42+3f2a1c9"
     from ._version import VERSION as APP_VERSION  # noqa: F401, F811
 except ImportError:

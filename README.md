@@ -120,8 +120,8 @@ Pull request'ы проходят шаги 1–2. Dependabot раз в недел
 Выпустить версию:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 Перед этим стоит поднять `APP_VERSION` в `island_app/config.py` — от него считаются номера nightly.
