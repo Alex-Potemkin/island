@@ -570,3 +570,251 @@ def set_banner(app_id, value):
 
 def prepare_app(qapp):
     """Platform setup right after the QApplication exists (macOS: no Dock icon)."""
+
+
+# ---------------------------------------------------------------- volume (Core Audio) and power events
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", wt.DWORD), ("Data2", wt.WORD), ("Data3", wt.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    @classmethod
+    def parse(cls, text):
+        import uuid
+        return cls.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+_ole32 = ctypes.OleDLL("ole32")
+_CLSID_MMDeviceEnumerator = _GUID.parse("bcde0395-e52f-467c-8e3d-c4579291692e")
+_IID_IMMDeviceEnumerator = _GUID.parse("a95664d2-9614-4f35-a746-de8db63617e6")
+_IID_IAudioEndpointVolume = _GUID.parse("5cdf2c82-841e-4546-9722-0cf74078229a")
+_audio = {"endpoint": None, "at": 0.0}
+
+
+def _vcall(obj, index, restype, *args):
+    """Call method number `index` of a COM interface pointer."""
+    types = tuple(ctypes.c_void_p if type(a).__name__ == "CArgObject" else type(a) for a in args)  # byref()
+    key = (obj.value if isinstance(obj, ctypes.c_void_p) else obj, index, restype, types)
+    fn = _protos.get(key)
+    if fn is None:
+        vtbl = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        fn = _protos[key] = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *types)(vtbl[index])
+        if len(_protos) > 64:            # objects come and go (default device lookups)
+            _protos.clear()
+            _protos[key] = fn
+    return fn(obj, *args)
+
+
+_protos = {}
+
+
+def _release(obj):
+    if obj:
+        _vcall(obj, 2, ctypes.c_ulong)
+
+
+def _endpoint():
+    """IAudioEndpointVolume of the default output device; looked up again now and then (headphones)."""
+    now = time.monotonic()
+    if _audio["endpoint"] is not None and now - _audio["at"] < 3.0:
+        return _audio["endpoint"]
+    _release(_audio["endpoint"])
+    _audio["endpoint"], _audio["at"] = None, now
+    enum, dev, vol = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    try:
+        _ole32.CoInitializeEx(None, 2)       # Qt has done it on the UI thread; harmless then
+    except OSError:
+        pass
+    try:
+        _ole32.CoCreateInstance(ctypes.byref(_CLSID_MMDeviceEnumerator), None, 0x17,
+                                ctypes.byref(_IID_IMMDeviceEnumerator), ctypes.byref(enum))
+        # IMMDeviceEnumerator::GetDefaultAudioEndpoint(eRender, eMultimedia)
+        if _vcall(enum, 4, ctypes.HRESULT, ctypes.c_int(0), ctypes.c_int(1), ctypes.byref(dev)) == 0:
+            # IMMDevice::Activate(IID_IAudioEndpointVolume, CLSCTX_ALL)
+            _vcall(dev, 3, ctypes.HRESULT, ctypes.byref(_IID_IAudioEndpointVolume), ctypes.c_uint32(0x17),
+                   ctypes.c_void_p(), ctypes.byref(vol))
+            _audio["endpoint"] = vol
+    except OSError:
+        _audio["endpoint"] = None
+    finally:
+        _release(dev)
+        _release(enum)
+    return _audio["endpoint"]
+
+
+def volume_state():
+    """(volume 0..100, muted) of the default speakers, or None. A few microseconds: polled."""
+    vol = _endpoint()
+    if vol is None:
+        return None
+    level, muted = ctypes.c_float(), wt.BOOL()
+    try:
+        _vcall(vol, 9, ctypes.HRESULT, ctypes.byref(level))       # GetMasterVolumeLevelScalar
+        _vcall(vol, 15, ctypes.HRESULT, ctypes.byref(muted))      # GetMute
+    except OSError:
+        _audio["at"] = 0.0          # the device went away: look it up again next time
+        return None
+    return int(round(level.value * 100)), bool(muted.value)
+
+
+def set_volume(level):
+    vol = _endpoint()
+    if vol is not None:
+        _vcall(vol, 7, ctypes.HRESULT, ctypes.c_float(max(0, min(100, level)) / 100), ctypes.c_void_p())
+
+
+WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE = 0x0218, 0x8013
+_POWER_GUIDS = {
+    "brightness": "8ffee2c6-2d01-46be-adb9-398addc5b4ff",     # GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS, %
+    "battery": "a7ad8041-b45a-4cae-87a3-eecbb468a9e1",        # GUID_BATTERY_PERCENTAGE_REMAINING, %
+    "power_source": "5d3e9a59-e9d5-4b00-a6bd-ff34ff516548",   # GUID_ACDC_POWER_SOURCE: 0 AC, 1 DC, 2 UPS
+}
+_power_handles = {}
+user32.RegisterPowerSettingNotification.restype = ctypes.c_void_p
+user32.RegisterPowerSettingNotification.argtypes = [wt.HANDLE, ctypes.POINTER(_GUID), wt.DWORD]
+user32.UnregisterPowerSettingNotification.argtypes = [ctypes.c_void_p]
+
+
+def register_power_notifications(widget):
+    """Windows then sends WM_POWERBROADCAST when brightness, battery level or the power source change
+    (and once right away with the current value). No polling."""
+    hwnd = int(widget.winId())
+    for h in _power_handles.pop(hwnd, []):
+        user32.UnregisterPowerSettingNotification(h)
+    handles = []
+    for guid in _POWER_GUIDS.values():
+        g = _GUID.parse(guid)
+        h = user32.RegisterPowerSettingNotification(hwnd, ctypes.byref(g), 0)
+        if h:
+            handles.append(h)
+    _power_handles[hwnd] = handles
+
+
+def unregister_power_notifications(widget):
+    for h in _power_handles.pop(int(widget.winId()), []):
+        user32.UnregisterPowerSettingNotification(h)
+
+
+class _PowerSetting(ctypes.Structure):
+    _fields_ = [("PowerSetting", _GUID), ("DataLength", wt.DWORD), ("Data", wt.DWORD)]
+
+
+_GUID_NAMES = {bytes(_GUID.parse(g)): name for name, g in _POWER_GUIDS.items()}
+
+
+def native_power(event_type, message):
+    """("brightness" | "battery" | "power_source", value) from a nativeEvent() message, or None."""
+    if event_type not in (b"windows_generic_MSG", "windows_generic_MSG"):
+        return None
+    msg = wt.MSG.from_address(int(message))
+    if msg.message != WM_POWERBROADCAST or msg.wParam != PBT_POWERSETTINGCHANGE or not msg.lParam:
+        return None
+    ps = _PowerSetting.from_address(msg.lParam)
+    name = _GUID_NAMES.get(bytes(ps.PowerSetting))
+    return (name, int(ps.Data)) if name and ps.DataLength >= 1 else None
+
+
+class _PowerStatus(ctypes.Structure):
+    _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                ("BatteryLifeTime", wt.DWORD), ("BatteryFullLifeTime", wt.DWORD)]
+
+
+def battery():
+    """{"percent", "plugged", "seconds_left"} or None on a PC without a battery."""
+    st = _PowerStatus()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)) or st.BatteryFlag & 128 \
+            or st.BatteryLifePercent == 255:
+        return None
+    left = st.BatteryLifeTime if st.BatteryLifeTime != 0xFFFFFFFF else None
+    return {"percent": int(st.BatteryLifePercent), "plugged": st.ACLineStatus == 1, "seconds_left": left}
+
+
+# ---------------------------------------------------------------- acrylic backdrop under the panel
+
+CAN_BLUR = sys.getwindowsversion().build >= 17134      # acrylic blur-behind: Windows 10 1803+
+
+
+class _AccentPolicy(ctypes.Structure):
+    _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int), ("GradientColor", wt.DWORD),
+                ("AnimationId", ctypes.c_int)]
+
+
+class _CompositionData(ctypes.Structure):
+    _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p), ("SizeOfData", ctypes.c_size_t)]
+
+
+class Backdrop:
+    """A plain (not layered) window with Windows' acrylic blur, kept right under the island while the
+    panel is open: the island itself is a layered window, and DWM blurs only non-layered ones. It never
+    takes focus and is covered by the panel, so clicks don't reach it."""
+    _class = None
+
+    def __init__(self):
+        self.hwnd = None
+        self.shown = False
+        self._geom = None
+
+    @classmethod
+    def _register(cls):
+        if cls._class is None:
+            class WNDCLASSW(ctypes.Structure):
+                _fields_ = [("style", wt.UINT), ("lpfnWndProc", ctypes.c_void_p), ("cbClsExtra", ctypes.c_int),
+                            ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                            ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+                            ("lpszMenuName", wt.LPCWSTR), ("lpszClassName", wt.LPCWSTR)]
+            wc = WNDCLASSW()
+            wc.lpfnWndProc = ctypes.cast(user32.DefWindowProcW, ctypes.c_void_p).value
+            wc.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+            wc.hbrBackground = ctypes.windll.gdi32.GetStockObject(4)      # BLACK_BRUSH: alpha 0 -> the blur shows
+            wc.lpszClassName = "IslandBackdrop"
+            user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+            user32.RegisterClassW(ctypes.byref(wc))
+            cls._class = wc
+        return cls._class
+
+    def _create(self, tint):
+        self._register()
+        user32.CreateWindowExW.restype = wt.HWND
+        user32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+                                           ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE,
+                                           ctypes.c_void_p]
+        ex = 0x00000080 | 0x08000000 | 0x00000008 | 0x00000020   # TOOLWINDOW | NOACTIVATE | TOPMOST | TRANSPARENT
+        self.hwnd = user32.CreateWindowExW(ex, "IslandBackdrop", "", 0x80000000, 0, 0, 10, 10, None, None,
+                                           ctypes.windll.kernel32.GetModuleHandleW(None), None)
+        policy = _AccentPolicy(4, 2, tint, 0)          # ACCENT_ENABLE_ACRYLICBLURBEHIND
+        data = _CompositionData(19, ctypes.cast(ctypes.byref(policy), ctypes.c_void_p), ctypes.sizeof(policy))
+        user32.SetWindowCompositionAttribute(wt.HWND(self.hwnd), ctypes.byref(data))
+
+    def show(self, above, x, y, w, h, radius, tint):
+        """Place it at (x, y, w, h) in physical pixels, rounded, right under the window `above`."""
+        if self.hwnd is None:
+            self._create(tint)
+        geom = (x, y, w, h, radius)
+        if geom != self._geom:
+            self._geom = geom
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2)
+            user32.SetWindowRgn(wt.HWND(self.hwnd), rgn, True)        # the window owns the region now
+        # SWP_NOACTIVATE | SWP_SHOWWINDOW, inserted after (= below) the island
+        user32.SetWindowPos(wt.HWND(self.hwnd), wt.HWND(above), x, y, w, h, 0x0010 | 0x0040)
+        self.shown = True
+
+    def hide(self):
+        if self.hwnd is not None and self.shown:
+            user32.ShowWindow(wt.HWND(self.hwnd), 0)
+        self.shown = False
+
+    def destroy(self):
+        if self.hwnd is not None:
+            user32.DestroyWindow(wt.HWND(self.hwnd))
+        self.hwnd, self.shown, self._geom = None, False, None
+
+
+def make_backdrop():
+    return Backdrop() if CAN_BLUR else None
+
+
+def window_rect(widget):
+    """(left, top, width, height) of a top-level widget in physical pixels."""
+    r = wt.RECT()
+    user32.GetWindowRect(wt.HWND(int(widget.winId())), ctypes.byref(r))
+    return r.left, r.top, r.right - r.left, r.bottom - r.top

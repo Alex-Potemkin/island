@@ -76,12 +76,12 @@ def main():
         check("full preset restores every tab", app.island.panel.tab_keys == list(layout.TABS) + ["settings"])
 
     def reset():
-        app.settings.set("ai.translate_to", "de")
+        app.settings.set("weather.city", "Berlin")
         app.reset_settings()
 
     def after_reset():
         s = app.settings
-        check("reset keeps onboarding and AI settings", s.get("onboarded") and s.get("ai.translate_to") == "de"
+        check("reset keeps onboarding, clears the rest", s.get("onboarded") and s.get("weather.city") == ""
               and s.get("theme") == "dark")
 
     def look():

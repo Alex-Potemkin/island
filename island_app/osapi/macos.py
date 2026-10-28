@@ -542,3 +542,38 @@ def get_banner(_app_id):
 
 def set_banner(_app_id, _value):
     pass
+
+
+def volume_state():
+    return None
+
+
+def set_volume(level):
+    pass
+
+
+def register_power_notifications(widget):
+    pass
+
+
+def unregister_power_notifications(widget):
+    pass
+
+
+def native_power(event_type, message):
+    return None
+
+
+def battery():
+    return None
+
+
+CAN_BLUR = False
+
+
+def make_backdrop():
+    return None
+
+
+def window_rect(widget):
+    return None

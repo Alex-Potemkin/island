@@ -78,7 +78,7 @@ jobs:
       - name: Tests
         timeout-minutes: 12
         run: |
-          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk; do
+          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk check_extras; do
             echo "::group::$t"
             ISLAND_HOME=$(mktemp -d) xvfb-run -a -s "-screen 0 1920x1080x24" python tests/$t.py
             echo "::endgroup::"
@@ -133,7 +133,7 @@ jobs:
         timeout-minutes: 12
         shell: pwsh
         run: |
-          foreach ($t in "check_tools", "check_layout", "check_integrations", "check_calendar", "check_notes", "check_desk") {
+          foreach ($t in "check_tools", "check_layout", "check_integrations", "check_calendar", "check_notes", "check_desk", "check_extras") {
             Write-Output "::group::$t"
             $env:ISLAND_HOME = Join-Path $env:RUNNER_TEMP "island-$t"
             python "tests/$t.py"
@@ -196,7 +196,7 @@ jobs:
       - name: Tests
         timeout-minutes: 15
         run: |
-          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk; do
+          for t in check_tools check_layout check_integrations check_calendar check_notes check_desk check_extras; do
             echo "::group::$t"
             ISLAND_HOME=$(mktemp -d) python tests/$t.py
             echo "::endgroup::"

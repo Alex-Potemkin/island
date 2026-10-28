@@ -262,8 +262,8 @@ def build_results(app, query):
             R("", "таймер 10 мин", "Запустить таймер", lambda: app.start_timer(600, "Таймер")),
             R("", "напомни позвонить маме завтра в 9", "Напоминание обычным языком", None),
             R("", "2^10 + 15%", "Калькулятор", None),
-            R("", "tr hello world", "Перевод через Claude", None),
-            R("", "? как переименовать ветку git", "Вопрос Claude", None),
+            R("", "закрепить telegram", "Закрепить программу на острове", None),
+            R("", "10 км в мили", "Конвертер", None),
             R("", "скриншот", "Область с разметкой", lambda: app.screenshot()),
         ]
 
@@ -287,13 +287,7 @@ def build_results(app, query):
     if m:
         out.append(R("", m.group(1), "Новая заметка", lambda t=m.group(1): app.add_note(t)))
 
-    m = re.match(r"^(?:\?|ai|ии|claude|спроси)\s*(.+)$", q, flags=re.I)
-    if m and m.group(1).strip():
-        out.append(R("", m.group(1), "Спросить Claude", lambda t=m.group(1): app.ask_ai(t), keep=True))
 
-    m = re.match(r"^(?:tr|перевод|переведи|translate)\s+(.+)$", q, flags=re.I)
-    if m:
-        out.append(R("", m.group(1), "Перевести через Claude", lambda t=m.group(1): app.translate(t), keep=True))
 
     calc = calculate(q)
     if calc is not None:
@@ -353,6 +347,8 @@ def _builtin(app):
     return [
         ("Скриншот области", "С разметкой", "", ["скриншот", "screenshot", "снимок"], app.screenshot),
         ("Скриншот экрана", "Весь экран", "", ["скриншот экрана", "screen"], lambda: app.screenshot(full=True)),
+        ("Запись экрана", "MP4 или GIF", "\uE714", ["запись", "запись экрана", "record", "видео", "gif"],
+         app.record),
         ("Пипетка", "Цвет с экрана", "", ["пипетка", "цвет", "color", "picker"], app.color_picker),
         ("QR с экрана", "Распознать код", "", ["qr", "кюар", "штрихкод"], app.scan_qr),
         ("Текст с экрана", "OCR", "", ["ocr", "текст с экрана", "распознать"], app.ocr),
@@ -364,7 +360,6 @@ def _builtin(app):
          lambda: app.open_page("control")),
         ("Система", "CPU, память, сеть", "", ["система", "монитор", "cpu", "system"],
          lambda: app.open_page("system")),
-        ("Чат с Claude", "", "", ["чат", "chat", "claude", "ии"], lambda: app.open_page("ai")),
         ("Настройки Island", "", "", ["настройки", "settings"], lambda: app.open_page("settings")),
         ("Заблокировать компьютер", "Win+L", "", ["блок", "lock"], app.lock),
         ("Не беспокоить", "Переключить", "", ["не беспокоить", "dnd"], app.toggle_dnd),

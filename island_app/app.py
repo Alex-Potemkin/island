@@ -9,7 +9,8 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import bridge, capture, config, devices, features, integrations, layout, osapi, perf, services
+from . import (bridge, capture, config, devices, features, integrations, layout, osapi, perf, power, recorder,
+               services)
 from .notifications import Notifications
 from . import widgets as W
 from .island import Island, is_input
@@ -20,7 +21,7 @@ if os.environ.get("ISLAND_HOME"):  # a test profile runs as its own instance
     SERVER_NAME += "-" + str(zlib.crc32(os.environ["ISLAND_HOME"].encode()))
 
 BUBBLE_KINDS = ("music", "print", "timer", "download", "claude")
-PRIORITY = {"alert": 100, "claude_wait": 80, "timer": 60, "claude": 50, "download": 40, "print": 35, "music": 30,
+PRIORITY = {"alert": 100, "rec": 98, "level": 95, "claude_wait": 80, "timer": 60, "claude": 50, "download": 40, "print": 35, "music": 30,
             "caps": 20}
 
 
@@ -44,8 +45,25 @@ def make_icon(size=64, dark=True):
 def _upgrade_settings(settings):
     """One-time changes for settings written by older versions."""
     rev = settings.get("rev", 1)
-    if not isinstance(rev, int) or rev >= 2:
+    if not isinstance(rev, int) or rev >= 3:
         return
+    if rev < 2:
+        _upgrade_v2(settings)
+    # 3: the Claude chat is gone — its tab, hot key and stored key
+    lay = settings.get("layout")
+    if isinstance(lay, dict) and isinstance(lay.get("tabs"), list) and "ai" in lay["tabs"]:
+        lay["tabs"] = [t for t in lay["tabs"] if t != "ai"]
+    for path in ("ai", "hotkeys.ai"):
+        node, *rest = path.split(".")
+        if rest:
+            if isinstance(settings.data.get(node), dict):
+                settings.data[node].pop(rest[0], None)
+        else:
+            settings.data.pop(node, None)
+    settings.set("rev", 3)
+
+
+def _upgrade_v2(settings):
     lay = settings.get("layout")
     if isinstance(lay, dict):
         if lay.get("idle") in (None, "empty"):
@@ -53,7 +71,6 @@ def _upgrade_settings(settings):
         tabs = lay.get("tabs")
         if isinstance(tabs, list):
             tabs.extend(t for t in ("apps", "printer", "deskdash") if t not in tabs)
-    settings.set("rev", 2)
 
 
 class App(QObject):
@@ -84,13 +101,17 @@ class App(QObject):
         self.clipboard = features.ClipboardHistory(self.settings, self.store)
         self.index = features.Index()
         self.apps = features.PinnedApps(self.store)
-        self.ai = features.AIChat(self.settings)
         self.notifications = Notifications(self)
         self.calendar = integrations.CalendarService(self.settings, self.notifications.push, self.store)
         self.github = integrations.GitHubService(self.settings, self.notifications.push)
         self.system_notifications = integrations.SystemNotifications(self.settings, self.notifications.push)
         self.printer = devices.BambuPrinter(self.settings, self.notifications.push)
         self.deskdash = devices.DeskDash(self.settings)
+        self.power = power.PowerWatch(self)
+        self.recorder = recorder.Recorder(self.settings)
+        self.recorder.changed.connect(self._recording)
+        self.recorder.saved.connect(self._recording_saved)
+        self.recorder.failed.connect(lambda msg: self.alert("\uE7BA", "Запись экрана", msg, ttl=5, important=True))
         self.hooks = services.HookServer(int(self.settings.get("hooks.port", 47811))) \
             if self.settings.get("hooks.enabled", True) else None
         self._alert_timer = QTimer(self, singleShot=True, timeout=self.clear_alert)
@@ -124,6 +145,7 @@ class App(QObject):
         self.qapp.setStyleSheet(self.theme.stylesheet())
         self.island = Island(self)
         self.island.show()
+        osapi.register_power_notifications(self.island)    # brightness, battery, power source
         failed = self.island.register_hotkeys(self.settings.get("hotkeys", {}))
         if failed:
             QTimer.singleShot(1500, lambda: self.alert("", "Занято сочетание", ", ".join(failed), ttl=5))
@@ -137,6 +159,8 @@ class App(QObject):
         page = old.panel.current.key if old.mode == "expanded" and old.panel.current else old.page_key
         expanded = old.mode == "expanded"
         old.register_hotkeys({})
+        osapi.unregister_power_notifications(old)
+        old.destroy_backdrop()
         old.panel.teardown()
         self.build_ui()
         if expanded:
@@ -374,9 +398,9 @@ class App(QObject):
         actions = {"command": self.open_command, "toggle": self.island.toggle,
                    "clipboard": lambda: self.island.expand("clipboard", focus=True),
                    "screenshot": self.screenshot, "picker": self.color_picker, "qr": self.scan_qr, "ocr": self.ocr,
+                   "record": self.record,
                    "notes": lambda: self.island.expand("notes", focus=True),
                    "timer": lambda: self.island.expand("timer"),
-                   "ai": lambda: self.island.expand("ai", focus=True),
                    "show": lambda: self.island.expand(), "settings": lambda: self.island.expand("settings"),
                    "calendar": lambda: self.island.expand("calendar"), "inbox": lambda: self.island.expand("inbox"),
                    "apps": lambda: self.island.expand("apps"), "printer": lambda: self.island.expand("printer"),
@@ -391,6 +415,7 @@ class App(QObject):
          "picker": self.color_picker, "qr": self.scan_qr, "ocr": self.ocr,
          "timer5": lambda: self.start_timer(300, "Таймер"), "pomodoro": self.timer.start_pomodoro,
          "note": lambda: self.open_page("notes", new_note=True), "command": self.open_command,
+         "record": self.record,
          "lock": self.lock}[key]()
 
     def open_settings(self, section):
@@ -421,7 +446,7 @@ class App(QObject):
         self.relayout_panel()
 
     def reset_settings(self):
-        keep = {"ai": self.settings.get("ai"), "onboarded": True}
+        keep = {"onboarded": True}
         self.settings.data = config._merge(config.DEFAULTS, keep)
         self.settings.save()
         QTimer.singleShot(30, self.rebuild)
@@ -433,7 +458,7 @@ class App(QObject):
         self.island.expand("command", focus=True)
 
     def open_page(self, key, new_note=False):
-        self.island.expand(key, focus=key in ("clipboard", "ai", "reminders"))
+        self.island.expand(key, focus=key in ("clipboard", "reminders"))
         if new_note:
             self.island.panel.page("notes").new_note()
 
@@ -474,18 +499,12 @@ class App(QObject):
         self.island.panel.page("notes").refresh()
         self.alert("", "Заметка сохранена", text[:50])
 
-    def ask_ai(self, text):
-        self.island.expand("ai", focus=True)
-        self.island.panel.page("ai").ask(text)
-
-    def translate(self, text):
-        self.island.expand("ai", focus=True)
-        self.island.panel.page("ai").ask(text, translate=True)
-
     def set_setting(self, path, value, rebuild=False):
         """rebuild=True: the setting changes how the island looks. Only the interface scale needs a new
         window; everything else is applied in place."""
         self.settings.set(path, value)
+        if path.startswith("live"):
+            self.power.apply_settings()
         if rebuild:
             if path == "scale":
                 QTimer.singleShot(30, self.rebuild)
@@ -583,6 +602,40 @@ class App(QObject):
             else:
                 self.alert("", "Скриншот скопирован", f"{val.width()}×{val.height()}")
         self._with_screen(lambda s, pm: capture.ShotOverlay(s, pm, full=full), done)
+
+    def record(self):
+        """Start recording a region of the screen, or stop the recording that runs."""
+        rec = self.recorder
+        if rec.active:
+            rec.stop()
+            return
+        if rec.busy:
+            self.alert("\uE714", "Запись ещё сохраняется", ttl=2)
+            return
+
+        def done(res):
+            screen, rect = res
+            QTimer.singleShot(150, lambda: rec.start(screen, rect))    # let the overlay vanish first
+        self._with_screen(lambda s, pm: capture.RecordRegionOverlay(s, pm), done)
+
+    def _recording(self):
+        rec = self.recorder
+        if rec.active:
+            self.activities["rec"] = {"kind": "rec", "title": "Запись", "value": recorder.fmt_clock(rec.elapsed()),
+                                      "action": rec.stop}
+        elif rec.busy:
+            self.activities["rec"] = {"kind": "rec", "title": "Сохраняю…", "value": "", "busy": True}
+        else:
+            self.activities.pop("rec", None)
+        self.on_live()
+
+    def _recording_saved(self, path):
+        try:
+            self.island.panel.page("shelf").add([path])
+        except Exception:  # noqa: BLE001 - the shelf is a convenience
+            pass
+        self.notifications.push("tools", "Запись сохранена", os.path.basename(path),
+                                action=lambda: osapi.reveal(path), glyph="\uE714")
 
     def color_picker(self):
         def done(hexcol):

@@ -24,6 +24,7 @@ SOURCES = {  # key: (glyph, title)
     "downloads": ("", "Загрузки"),
     "claude": ("", "Claude Code"),
     "printer": ("", "3D-принтер"),
+    "battery": ("", "Батарея"),
     "deskdash": ("", "DeskDash"),
     "scripts": (BELL, "Скрипты и вебхуки"),
     "apps": (BELL, "Другие приложения"),
@@ -32,7 +33,7 @@ STYLES = {"card": "Карточка", "pill": "В пилюле", "off": "Вык�
 DEFAULTS = {"style": "card", "duration": 6, "sound": "drop", "volume": 70, "sound_file": "", "event_lead": 10,
             "quiet": {"enabled": False, "from": 22, "to": 8}, "sources": {}, "sounds": {},
             "apps": True, "muted_apps": []}
-IMPORTANT = {"reminders", "timer"}   # still shown during quiet hours / do-not-disturb
+IMPORTANT = {"reminders", "timer", "battery"}   # still shown during quiet hours / do-not-disturb
 
 
 class Notifications(QObject):

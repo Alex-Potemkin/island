@@ -184,7 +184,7 @@ def main():
         check("old settings: the clock is back in the pill", lay["idle"] == "clock")
         check("new tabs added once: apps, printer, deskdash", lay["tabs"][-3:] == ["apps", "printer", "deskdash"],
               lay["tabs"])
-        check("upgrade runs once", app.settings.get("rev") == 2)
+        check("upgrade runs once", app.settings.get("rev") == 3)
         isl = app.island
         check("pill at 90 % shows the time", isl.mode == "idle" and isl.idle_text() == time.strftime("%H:%M"),
               (isl.mode, isl.idle_text()))

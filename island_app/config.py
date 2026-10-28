@@ -46,6 +46,7 @@ DEFAULTS = {
     "dnd": False,               # do not disturb: no transient alerts
     "live": {"music": True, "timer": True, "layout": True, "caps": True,
              "privacy": True, "downloads": True, "claude": True, "print": True,
+             "volume": True, "battery": True,
              "split": True},          # a second activity in a bubble next to the pill
     "clipboard": {"max_items": 200, "save_images": True},
     "hotkeys": {
@@ -58,9 +59,8 @@ DEFAULTS = {
         "ocr": "ctrl+alt+o",
         "notes": "ctrl+alt+n",
         "timer": "ctrl+alt+t",
-        "ai": "ctrl+alt+a",
+        "record": "ctrl+alt+r",
     },
-    "ai": {"model": "claude-sonnet-5-5", "api_key": "", "translate_to": "ru"},
     "weather": {"enabled": True, "city": ""},
     "hooks": {"enabled": True, "port": 47811},
     "notifications": {"style": "card", "duration": 6, "sound": "drop", "volume": 70, "sound_file": "",
@@ -71,6 +71,7 @@ DEFAULTS = {
                  "github": {"token": ""}, "ics": [],
                  "bambu": {"host": "", "serial": "", "code": "", "name": ""}},
     "deskdash": {"enabled": True, "spotify": True},   # macros and Spotify Connect through the DeskDash agent
+    "record": {"format": "mp4"},     # screen recording: mp4 | gif
     "pomodoro": {"work": 25, "short": 5, "long": 15, "cycles": 4},
 }
 

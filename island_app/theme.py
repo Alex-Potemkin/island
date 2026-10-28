@@ -42,10 +42,11 @@ CORNERS = {"sharp": ("Строгие", 0.45), "normal": ("Обычные", 1.0),
 ANIMATION = {"fast": ("Быстро", 760.0), "normal": ("Обычно", 420.0), "slow": ("Плавно", 210.0), "off": ("Без анимации", 0)}
 PILL = {"small": ("Маленькая", 0.82), "normal": ("Обычная", 1.0), "large": ("Большая", 1.18)}
 POSITION = {"left": "Слева", "center": "По центру", "right": "Справа"}
+MATERIAL = {"acrylic": "Акрил (размытие)", "solid": "Сплошной"}
 FONTS = ["auto", "Segoe UI", "Bahnschrift", "Inter", "Calibri", "Noto Sans", "Ubuntu", "Consolas"]
 
 APPEARANCE = {"accent": "mono", "corners": "normal", "opacity": 100, "shadow": True, "animation": "normal",
-              "pill": "normal", "position": "center", "font": "auto"}
+              "pill": "normal", "position": "center", "font": "auto", "material": "acrylic"}
 
 _bundled = None
 
@@ -70,7 +71,7 @@ def appearance(settings):
     a = dict(APPEARANCE)
     a.update(settings.get("appearance") or {})
     for key, table in (("accent", ACCENTS), ("corners", CORNERS), ("animation", ANIMATION), ("pill", PILL),
-                       ("position", POSITION)):
+                       ("position", POSITION), ("material", MATERIAL)):
         if a[key] not in table:
             a[key] = APPEARANCE[key]
     try:
@@ -107,6 +108,9 @@ class Theme:
         self.k = settings.scale * (PILL[self.a["pill"]][1] if pill else 1.0)
         self.rk = CORNERS[self.a["corners"]][1]
         self.opacity = self.a["opacity"] / 100.0
+        # acrylic: the open panel lets Windows' blur through (osapi.Backdrop); elsewhere it is solid
+        self.material = self.a["material"] if osapi.CAN_BLUR else "solid"
+        self.glass = (0.62 if THEMES[self.key][1]["dark"] else 0.72) if self.material == "acrylic" else None
         self.shadow = bool(self.a["shadow"])
         self.stiffness = ANIMATION[self.a["animation"]][1]
         self.position = self.a["position"]
@@ -136,12 +140,17 @@ class Theme:
         """Pill/panel fill with the chosen opacity."""
         return self.col("bg", int(255 * self.opacity))
 
+    def glass_bg(self):
+        """The open panel's fill over the acrylic backdrop."""
+        return self.col("bg", int(255 * min(self.opacity, self.glass or 1)))
+
     def css(self, name):
-        """Stylesheet colour for card-like surfaces, following the panel opacity."""
+        """Stylesheet colour for card-like surfaces, following the panel opacity (and the acrylic)."""
         c = QColor(self.c[name])
-        if self.opacity >= 1:
+        op = min(self.opacity, self.glass + 0.14) if self.glass else self.opacity
+        if op >= 1:
             return c.name()
-        return f"rgba({c.red()},{c.green()},{c.blue()},{int(255 * min(1, self.opacity + 0.15))})"
+        return f"rgba({c.red()},{c.green()},{c.blue()},{int(255 * min(1, op + 0.15))})"
 
     def font(self, px, weight=QFont.Normal, display=False):
         f = QFont(self.display_family if display else self.ui_family)

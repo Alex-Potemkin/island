@@ -14,7 +14,7 @@ from .widgets import IconButton, button, hbox, label, vbox
 
 ACTIONS = {"command": "Командная строка", "toggle": "Показать / свернуть", "clipboard": "Буфер обмена",
            "screenshot": "Скриншот", "picker": "Пипетка", "qr": "QR с экрана", "ocr": "Текст с экрана",
-           "notes": "Заметки", "timer": "Таймер", "ai": "Claude"}
+           "notes": "Заметки", "timer": "Таймер", "record": "Запись экрана"}
 
 
 class PresetCard(QAbstractButton):
@@ -446,6 +446,9 @@ class SettingsPage(Page):
         f.title("Форма и эффекты")
         f.row("Углы панели", "", chip_group([(k, t) for k, (t, _f) in TH.CORNERS.items()], a["corners"],
                                             lambda k: self.app.set_appearance(corners=k)))
+        if osapi.CAN_BLUR:
+            f.row("Материал панели", "Акрил — размытый рабочий стол под панелью, как в Windows 11",
+                  chip_group(list(TH.MATERIAL.items()), a["material"], lambda k: self.app.set_appearance(material=k)))
         f.row("Непрозрачность", "Меньше — сквозь панель виден рабочий стол", slider(
             60, 100, a["opacity"], lambda v: f"{v}%", lambda v: self.app.set_appearance(opacity=v)))
         sh = W.Toggle(a["shadow"])
@@ -505,7 +508,8 @@ class SettingsPage(Page):
         live = self.app.settings.get("live", {})
         opts = [("music", "Музыка"), ("timer", "Таймер"), ("layout", "Раскладка"), ("caps", "Caps Lock"),
                 ("privacy", "Микрофон и камера"), ("downloads", "Загрузки"), ("claude", "Claude Code"),
-                ("print", "3D-печать"), ("split", "Два события сразу")]
+                ("print", "3D-печать"), ("volume", "Громкость и яркость"), ("battery", "Батарея и Bluetooth"),
+                ("split", "Два события сразу")]
         f.add(chip_grid(opts, [k for k, _t in opts if live.get(k, True)],
                         lambda keys: self.app.set_setting("live", {k: k in keys for k, _t in opts})))
         f.add(hbox("stretch", button("Вернуть как было", "ghost", lambda: self.app.apply_preset("full"))))
@@ -801,21 +805,6 @@ class SettingsPage(Page):
     def _more(self):
         s = self.app.settings
         f = _Form()
-        f.title("Claude (ИИ)", "Нужен ключ Anthropic API. Он хранится только у вас"
-                + (", зашифрованный средствами Windows." if osapi.IS_WINDOWS else " (файл доступен только вам)."))
-        self.key = QLineEdit()
-        self.key.setEchoMode(QLineEdit.Password)
-        self.key.setFixedWidth(W.T.s(280))
-        self.key.setPlaceholderText("ключ сохранён — введите новый, чтобы заменить" if self.app.ai.api_key()
-                                    else "sk-ant-…")
-        self.key.returnPressed.connect(self._save_key)
-        f.row("Ключ API", "или переменная ANTHROPIC_API_KEY",
-              hbox(self.key, button("Сохранить", None, self._save_key), spacing=6))
-        lang = QLineEdit(s.get("ai.translate_to", "ru"))
-        lang.setFixedWidth(W.T.s(80))
-        lang.editingFinished.connect(lambda: self.app.set_setting("ai.translate_to", lang.text().strip() or "ru"))
-        f.row("Переводить на", "код языка: ru, en, de…", lang)
-
         f.title("Разное")
         city = QLineEdit(s.get("weather.city", ""))
         city.setPlaceholderText("определить по IP")
@@ -853,15 +842,6 @@ class SettingsPage(Page):
                    button("Сбросить все настройки", "ghost", self.app.reset_settings), "stretch",
                    label(f"Island {config.APP_VERSION} · {osapi.NAME}", "faint"), spacing=6))
         return f
-
-    def _save_key(self):
-        key = self.key.text().strip()
-        if not key:
-            return
-        self.app.settings.set("ai.api_key", config.protect(key) or key)
-        self.key.clear()
-        self.key.setPlaceholderText("ключ сохранён — введите новый, чтобы заменить")
-        self.app.alert("", "Ключ сохранён")
 
     def _copy_hooks(self):
         port = self.app.settings.get("hooks.port")

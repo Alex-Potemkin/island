@@ -103,6 +103,7 @@ args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--window
         "--specpath", BUILD,
         "--add-data", f"{assets}{os.pathsep}island_app/assets",   # bundled icon font
         "--collect-binaries", "pyzbar",
+        "--collect-binaries", "imageio_ffmpeg",                    # ffmpeg for screen recording
         "--collect-data", "tzdata",                                # iCal time zones (Windows has no tz database)
         "--hidden-import", "qrcode.image.pil",
         "--exclude-module", "tkinter"]

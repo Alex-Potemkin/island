@@ -183,6 +183,8 @@ class Island(QWidget):
                         "r": Spring(T.s(15), k), "o": Spring(0, 260, 1.0), "b": Spring(0, k)}
         self.panel = Panel(self)
         self.panel.hide()
+        self.backdrop = None          # acrylic blur under the open panel (Windows)
+        self._backdrop_on = False
         self._anim = perf.timer(QTimer(self, timeout=self._step), 15, 33)
         self._last_t = time.monotonic()
         self._live_anim = perf.timer(QTimer(self, timeout=self._update_pill), 33, 80)
@@ -285,16 +287,55 @@ class Island(QWidget):
             self.panel.setGeometry(tr.toRect())
             if not self.panel.isVisible() and not perf.ECO:
                 self.panel.show()
+        self._hide_backdrop()
         if snap:
             for sp in s.values():
                 sp.snap()
             self._apply_panel_opacity()
             self._update_mask()
+            self._sync_backdrop()
             self.update()
         elif not self._anim.isActive():
             self._last_t = time.monotonic()
             self._anim.start()
         self._update_live_anim()
+
+    def _sync_backdrop(self):
+        """Acrylic: once the panel has opened, put the blur window right under it."""
+        want = self.mode == "expanded" and self.T.material == "acrylic" and self.isVisible() and not self._fs_hidden
+        if not want:
+            self._hide_backdrop()
+            return
+        if self.backdrop is None:
+            self.backdrop = osapi.make_backdrop()
+        geo = osapi.window_rect(self)
+        if self.backdrop is None or not geo or not self.width():
+            return
+        k = geo[2] / self.width()
+        r = self.shape_rect()
+        rad = min(self.springs["r"].v, r.height() / 2)
+        self.backdrop.show(int(self.winId()), geo[0] + round((r.x() + 1) * k), geo[1] + round((r.y() + 1) * k),
+                           round((r.width() - 2) * k), round((r.height() - 2) * k), round(rad * k), 0x10000000)
+        if not self._backdrop_on:
+            self._backdrop_on = True
+            self.update()
+
+    def _hide_backdrop(self):
+        if self.backdrop is not None:
+            self.backdrop.hide()
+        if self._backdrop_on:
+            self._backdrop_on = False
+            self.update()
+
+    def destroy_backdrop(self):
+        if self.backdrop is not None:
+            self.backdrop.destroy()
+            self.backdrop = None
+        self._backdrop_on = False
+
+    def hideEvent(self, e):
+        self._hide_backdrop()
+        super().hideEvent(e)
 
     def restyle(self):
         """The theme objects were updated in place: new spring stiffness, position, repaint."""
@@ -333,6 +374,7 @@ class Island(QWidget):
             self._anim.stop()
             if self.mode != "expanded":
                 self.panel.hide()
+            self._sync_backdrop()
             self.update()
 
     def _update_mask(self):
@@ -389,7 +431,7 @@ class Island(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(c)
                 p.drawRoundedRect(r.adjusted(-grow, -grow * 0.4, grow, grow * 1.1), rad + grow, rad + grow)
-        p.setBrush(T.bg())
+        p.setBrush(T.glass_bg() if self._backdrop_on and big else T.bg())
         p.setPen(QPen(T.col("border"), 1) if not T.dark else Qt.NoPen)
         p.drawRoundedRect(r, rad, rad)
         if self.mode in ("live", "idle") and r.height() > T.s(20):
@@ -422,6 +464,10 @@ class Island(QWidget):
             return h + T.s(10) + text + T.s(14) + T.s(30) + T.s(14) + dots
         if kind == "timer":
             return T.s(196) + dots
+        if kind == "level":
+            return T.s(268) + dots
+        if kind == "rec":
+            return T.s(170 if not live.get("busy") else 150) + dots
         if kind == "print":
             title = min(QFontMetrics(T.font(12, 500)).horizontalAdvance(live.get("title", "")), T.s(150))
             value = QFontMetrics(T.tabular(13)).horizontalAdvance(live.get("value", ""))
@@ -660,6 +706,42 @@ class Island(QWidget):
         p.drawText(QRectF(r.left(), r.top(), right - T.s(8) - r.left(), r.height()),
                    Qt.AlignVCenter | Qt.AlignRight, live.get("value", ""))
 
+    def _live_rec(self, p, r, live, right):
+        """Screen recording: a pulsing red dot, the time; click stops."""
+        T = self.P
+        d = T.s(10)
+        pulse = 0.55 + 0.45 * abs(math.sin(time.monotonic() * 2.2)) if not live.get("busy") else 0.35
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 59, 48, int(255 * pulse)))
+        p.drawEllipse(QRectF(r.left() + T.s(16), r.center().y() - d / 2, d, d))
+        p.setFont(T.font(12.5, 600))
+        p.setPen(T.col("fg"))
+        p.drawText(QRectF(r.left() + T.s(36), r.top(), T.s(90), r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   live.get("title", ""))
+        p.setFont(T.tabular(13))
+        p.drawText(QRectF(r.left(), r.top(), right - T.s(10) - r.left(), r.height()),
+                   Qt.AlignVCenter | Qt.AlignRight, live.get("value", ""))
+
+    def _live_level(self, p, r, live, right):
+        """Volume / brightness: glyph, a bar that fills, the value."""
+        T = self.P
+        icon = QRectF(r.left() + T.s(12), r.top(), T.s(22), r.height())
+        self._icon(p, icon, live.get("glyph", ""), "fg", 14)
+        p.setFont(T.tabular(12.5))
+        value = live.get("value", "")
+        vw = max(T.s(34), p.fontMetrics().horizontalAdvance(value))
+        p.setPen(T.col("fg2"))
+        p.drawText(QRectF(right - T.s(10) - vw, r.top(), vw, r.height()), Qt.AlignVCenter | Qt.AlignRight, value)
+        x0, x1 = icon.right() + T.s(8), right - T.s(18) - vw
+        bh = T.s(5)
+        bar = QRectF(x0, r.center().y() - bh / 2, max(0, x1 - x0), bh)
+        p.setPen(Qt.NoPen)
+        p.setBrush(T.col("active"))
+        p.drawRoundedRect(bar, bh / 2, bh / 2)
+        if not live.get("muted"):
+            p.setBrush(T.col("fg"))
+            p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * live.get("progress", 0), bh), bh / 2, bh / 2)
+
     def _live_print(self, p, r, live, right):
         """3D print: progress ring with the printer glyph, job name, percent and time left."""
         T = self.P
@@ -740,7 +822,7 @@ class Island(QWidget):
         live = self.app.current_live()
         sec = self.app.second_live() if self.mode == "live" and live else None
         moving = lambda x: x and ((x["kind"] == "music" and x.get("playing") and not (x is sec and x.get("art")))
-                                  or (x["kind"] == "claude" and x.get("busy")))
+                                  or (x["kind"] == "claude" and x.get("busy")) or x["kind"] == "rec")
         animated = self.mode == "live" and live and (moving(live) or moving(sec))
         if animated and not self._live_anim.isActive():
             self._live_anim.start()
@@ -1114,6 +1196,10 @@ class Island(QWidget):
         return failed
 
     def nativeEvent(self, event_type, message):
+        pw = osapi.native_power(event_type, message)
+        if pw is not None:
+            QTimer.singleShot(0, lambda: self.app.power.on_power(*pw))
+            return False, 0
         hid = osapi.native_hotkey(event_type, message)
         if hid is not None:
             name = HOTKEY_IDS.get(hid)

@@ -61,6 +61,7 @@ class RegionOverlay(Overlay):
 
     def __init__(self, screen, pixmap, hint=""):
         super().__init__(screen, pixmap)
+        self.screen_ref = screen
         self.hint = hint
         self.origin = None
         self.sel = QRect()
@@ -117,6 +118,18 @@ class RegionOverlay(Overlay):
     def finish(self, rect):
         img = self.crop(rect)
         self.done.emit(img)
+        self.close()
+
+
+class RecordRegionOverlay(RegionOverlay):
+    """Pick the region to record: emits (screen, rect in the screen's logical coordinates)."""
+
+    def __init__(self, screen, pixmap):
+        super().__init__(screen, pixmap, "Выделите область для записи — или кликните, чтобы записать весь экран. "
+                                         "Esc — отмена")
+
+    def finish(self, rect):
+        self.done.emit((self.screen_ref, QRect(rect)))
         self.close()
 
 

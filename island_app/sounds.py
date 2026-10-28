@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import wave
 
 from . import config, osapi
@@ -157,12 +158,22 @@ def synth(name):
     return []
 
 
+_synth_lock = threading.Lock()   # two notifications at once must not write the same file together
+
+
 def sound_file(name, volume=80):
     """Path of a WAV for a built-in sound at this volume, generated once into the data folder."""
     folder = os.path.join(config.DATA_DIR, "sounds")
     path = os.path.join(folder, f"{name}_{int(volume)}.wav")
     if os.path.exists(path):
         return path
+    with _synth_lock:
+        if os.path.exists(path):
+            return path
+        return _write_sound(name, volume, folder, path)
+
+
+def _write_sound(name, volume, folder, path):
     samples = synth(name)
     if not samples:
         return None
@@ -172,7 +183,7 @@ def sound_file(name, volume=80):
     pcm = array.array("h", (int(max(-1.0, min(1.0, x * gain)) * 32767) for x in samples))
     if sys.byteorder == "big":
         pcm.byteswap()
-    tmp = path + ".tmp"
+    tmp = f"{path}.{threading.get_ident()}.tmp"
     with wave.open(tmp, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)

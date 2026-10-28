@@ -77,7 +77,7 @@ def run(app, argv):
     step(100, lambda: (app.clear_alert(), app.settings.set("notifications", {"sound": "none"})), None)
     # pages
     for i, key in enumerate(["home", "clipboard", "shelf", "notes", "timer", "reminders", "control", "tools",
-                             "system", "ai", "settings"]):
+                             "system", "apps", "settings"]):
         step(300, lambda k=key: isl().expand(k), None)
         step(1300 if key != "system" else 3200, None, f"1{i:01d}_{key}" if i < 10 else f"2{i - 10}_{key}")
     for view, name in (("week", "26_calendar_week"), ("month", "28_calendar_month"), ("agenda", "29_calendar_list")):

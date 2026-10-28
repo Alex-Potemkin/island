@@ -8,7 +8,7 @@ from PySide6.QtCore import QFileInfo, QMimeData, QRectF, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QFont, QImage, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (QAbstractItemView, QFileIconProvider, QGridLayout, QHBoxLayout,
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
-                               QSlider, QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
+                               QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import bridge, commands, features, layout, osapi, perf, services
 from . import widgets as W
@@ -557,7 +557,6 @@ class ClipboardPage(Page):
         m.addAction("Только скопировать", lambda: (self.app.clipboard.copy(item), self.app.alert("", "Скопировано")))
         m.addAction("Открепить" if item.get("pinned") else "Закрепить", lambda: self.app.clipboard.pin(item))
         if item["kind"] == "text":
-            m.addAction("Перевести", lambda: self.app.translate(item["text"]))
             m.addAction("QR-код из текста", lambda: self.app.show_qr_for(item["text"]))
         m.addSeparator()
         m.addAction("Удалить", lambda: self.app.clipboard.remove(item))
@@ -1120,7 +1119,7 @@ class ControlPage(Page):
 
 
 class ToolsPage(Page):
-    key, glyph, title, height = "tools", "", "Инструменты", 330
+    key, glyph, title, height = "tools", "", "Инструменты", 400
 
     def build(self):
         T = self.T
@@ -1129,7 +1128,8 @@ class ToolsPage(Page):
                  ("", "Пипетка", "HEX в буфер", self.app.color_picker),
                  ("", "QR с экрана", "Распознать", self.app.scan_qr),
                  ("", "Текст с экрана", "OCR, офлайн", self.app.ocr),
-                 ("", "QR из буфера", "Сгенерировать", self._qr_from_clip)]
+                 ("", "QR из буфера", "Сгенерировать", self._qr_from_clip),
+                 ("\uE714", "Запись экрана", "MP4 или GIF · Ctrl+Alt+R", self.app.record)]
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(T.s(8))
@@ -1157,6 +1157,10 @@ class ToolsPage(Page):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(T.s(10))
         lay.addWidget(gw)
+        from .settings_ui import chip_group
+        lay.addWidget(hbox(label("Формат записи", "muted"),
+                           chip_group([("mp4", "MP4"), ("gif", "GIF")], self.app.settings.get("record.format", "mp4"),
+                                      lambda k: self.app.settings.set("record.format", k)), "stretch", spacing=10))
         lay.addWidget(hbox(label("Цвета", "muted"), cw, "stretch", spacing=10))
         lay.addWidget(res_row)
         self.refresh_colors()
@@ -1286,115 +1290,6 @@ class SystemPage(Page):
 
 def T_s(v):
     return W.T.s(v)
-
-
-# ================================================================ AI chat
-
-
-class AIPage(Page):
-    key, glyph, title, height = "ai", "", "Claude", 440
-
-    def build(self):
-        T = self.T
-        self.view = QTextBrowser()
-        self.view.setOpenExternalLinks(True)
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Спросите Claude…   (Enter — отправить)")
-        self.input.returnPressed.connect(self._send)
-        self.b_chat = button("Чат", "chip")
-        self.b_tr = button("Перевод", "chip")
-        for b in (self.b_chat, self.b_tr):
-            b.setCheckable(True)
-            b.setAutoExclusive(True)
-        self.b_chat.setChecked(True)
-        self.b_tr.toggled.connect(lambda on: self.input.setPlaceholderText(
-            "Текст для перевода…" if on else "Спросите Claude…   (Enter — отправить)"))
-        self.status = label("", "faint")
-        top = hbox(self.b_chat, self.b_tr, self.status, "stretch",
-                   button("Новый чат", "ghost", self._clear), spacing=6)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(T.s(8))
-        lay.addWidget(top)
-        lay.addWidget(self.view, 1)
-        lay.addWidget(hbox(self.input, IconButton("", "Отправить", 36, 14, self._send, filled=True), spacing=8))
-        self.msgs = []      # (role, text)
-        self._render_timer = QTimer(self, singleShot=True, interval=60, timeout=self._render)
-        ai = self.app.ai
-        self.listen(ai.delta, self._delta)
-        self.listen(ai.done, self._done)
-        self.listen(ai.failed, self._failed)
-        self._render()
-
-    def focus_target(self):
-        return self.input
-
-    def ask(self, text, translate=False):
-        (self.b_tr if translate else self.b_chat).setChecked(True)
-        self.input.setText(text)
-        self._send()
-
-    def _send(self):
-        text = self.input.text().strip()
-        if not text or self.app.ai.busy:
-            return
-        self.input.clear()
-        self.msgs.append(("user", text))
-        self.msgs.append(("assistant", ""))
-        self.status.setText("думает…")
-        self._render()
-        if self.b_tr.isChecked():
-            self.app.ai.translate(text)
-        else:
-            self.app.ai.ask(text)
-
-    def _delta(self, chunk):
-        if self.msgs and self.msgs[-1][0] == "assistant":
-            self.msgs[-1] = ("assistant", self.msgs[-1][1] + chunk)
-            self.status.setText("пишет…")
-            if not self._render_timer.isActive():
-                self._render_timer.start()
-
-    def _done(self, reply):
-        self.status.setText(self.app.settings.get("ai.model", ""))
-        if self.msgs and self.msgs[-1][0] == "assistant":
-            self.msgs[-1] = ("assistant", reply)
-        self._render()
-        if not self.isVisible():
-            self.app.alert("", "Claude ответил", reply[:80])
-
-    def _failed(self, msg):
-        self.status.setText("")
-        if self.msgs and self.msgs[-1] == ("assistant", ""):
-            self.msgs.pop()
-        self.msgs.append(("error", msg))
-        self._render()
-
-    def _clear(self):
-        self.app.ai.reset()
-        self.msgs = []
-        self._render()
-
-    def _render(self):
-        c = self.T.c
-        if not self.msgs:
-            key = "есть" if self.app.ai.api_key() else "не задан — Настройки → ИИ"
-            md = (f"### Claude\n\nЧат и перевод на вашем ключе Anthropic API. Модель: "
-                  f"`{self.app.settings.get('ai.model')}`. Ключ: {key}.\n\n"
-                  "Из командной строки: `? вопрос`, `tr текст`.")
-            self.view.setMarkdown(md)
-            return
-        parts = []
-        for role, text in self.msgs:
-            if role == "user":
-                parts.append(f"**Вы**\n\n{text}\n")
-            elif role == "assistant":
-                parts.append(f"**Claude**\n\n{text or '…'}\n")
-            else:
-                parts.append(f"**Ошибка:** {text}\n")
-        self.view.setMarkdown("\n\n---\n\n".join(parts))
-        self.view.document().setDefaultStyleSheet(f"code {{ background: {c['raised']}; }}")
-        self.view.moveCursor(QTextCursor.End)
 
 
 # ================================================================ command bar
@@ -1703,5 +1598,5 @@ from .calendar_ui import CalendarPage  # noqa: E402  (uses the helpers above)
 from .desk_ui import AppsPage, DeskDashPage, PrinterPage  # noqa: E402
 
 PAGES = {cls.key: cls for cls in (HomePage, ClipboardPage, ShelfPage, NotesPage, TimerPage, RemindersPage,
-                                  ControlPage, ToolsPage, SystemPage, AIPage, CalendarPage, InboxPage,
+                                  ControlPage, ToolsPage, SystemPage, CalendarPage, InboxPage,
                                   AppsPage, PrinterPage, DeskDashPage)}
